@@ -140,6 +140,12 @@ export function buildValidatePrompt({ manifestBody, anchors, repoName }) {
   p.push('  5. **Decision diamonds `{label?}` for branches**, with labeled case');
   p.push('     edges (`-->|yes|` / `-->|no|`). A branching system with zero');
   p.push('     diamonds is a list pretending to be control-flow — penalize.');
+  p.push('  6. **Reads top→bottom in execution order, no inverting back-edge.**');
+  p.push('     The entry/trigger stage must be first; the loop must close into a');
+  p.push('     TERMINAL sink node, NOT a literal edge from the last stage back up');
+  p.push('     to the first (`Last -.-> First`). Such an upward back-edge makes');
+  p.push('     mermaid hoist the terminal phase to the top so the picture renders');
+  p.push('     BACKWARDS — penalize it (≤6) even if every node/edge is correct.');
   p.push('  Scoring guide: a code-transcription / unlabeled-edge-soup diagram');
   p.push('  scores LOW (≤4); a subgraph-grouped, fully-labeled, diamond-using,');
   p.push('  verb-named diagram of the right size scores HIGH (8-10). A diagram');

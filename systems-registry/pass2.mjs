@@ -396,7 +396,7 @@ export function buildPromptFor(inputs) {
   parts.push('treat it as a PICTURE, not a transcription. A reader who has never opened');
   parts.push('the code should understand what the system does in 10 seconds.');
   parts.push('');
-  parts.push('Five rules, in priority order:');
+  parts.push('Six rules, in priority order:');
   parts.push('');
   parts.push('1. **Name what each step DOES, not the file it lives in.** Bad: `pass2.mjs`.');
   parts.push('   Good: `Generate body per system`. File paths belong in Anchors, not the');
@@ -422,6 +422,14 @@ export function buildPromptFor(inputs) {
   parts.push('5. **Use decision diamonds `{label?}` for branches**, with `-->|yes|` /');
   parts.push('   `-->|no|` (or whatever the cases are). Zero diamonds = the diagram is a');
   parts.push('   list, not a control-flow. Aim for ≥2 diamonds in any branching system.');
+  parts.push('');
+  parts.push('6. **The loop must READ top→bottom in execution order.** The entry/trigger');
+  parts.push('   stage goes FIRST (top); the terminal stage LAST. Close the loop into a');
+  parts.push('   TERMINAL sink node (e.g. `C((next turn))`) — do NOT draw a literal edge');
+  parts.push('   from the last stage back UP to the first (`Last -.-> First`). A long');
+  parts.push('   upward back-edge makes mermaid (dagre) hoist the terminal phase to the');
+  parts.push('   top, so the rendered picture reads BACKWARDS. Convey recurrence with the');
+  parts.push('   sink\'s label ("re-runs next push"), never with an inverting back-edge.');
   parts.push('');
   parts.push('### Example: GOOD vs BAD for the same system');
   parts.push('');
@@ -472,7 +480,6 @@ export function buildPromptFor(inputs) {
   parts.push('  J -->|yes| O');
   parts.push('  O -->|README + .html| I[inject PreToolUse hook]');
   parts.push('  I -.->|Mermaid + page link| C((next Claude turn))');
-  parts.push('  C -.->|edits a globbed file| P0');
   parts.push('```');
   parts.push('');
   parts.push('Same node count — different shape. The reader instantly sees four phases,');
