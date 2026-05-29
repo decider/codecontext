@@ -1,0 +1,10 @@
+{
+  "description": "A cross-dir system v1 heuristic CAN'T see. Pass 0 should return ≤1 candidate (or possibly zero); Pass 1 hypothesis is expected to identify the real cross-dir system.",
+  "minScore": 4,
+  "expectedSystems": [],
+  "passZeroExpectation": "Heuristic will NOT detect the cross-dir system. Acceptable: empty or single-dir candidates.",
+  "passOneIdealHypothesis": {
+    "expectedSystemName": "event-processor",
+    "expectedGlobs": ["apps/api/**", "packages/shared/event.ts", "scripts/relay.sh"]
+  }
+}

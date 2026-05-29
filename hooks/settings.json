@@ -1,0 +1,36 @@
+{
+  "_comment": "Template snippet merged into a host repo's .claude/settings.json by scripts/install.sh. Paths are relative to the host repo root and assume the plugin is vendored at tools/codecontext/.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Glob|Grep",
+        "hooks": [
+          { "type": "command", "command": "node tools/codecontext/docgen/inject-readme-context.mjs" },
+          { "type": "command", "command": "node tools/codecontext/systems-registry/inject.mjs" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node tools/codecontext/hooks/auto-docs-refresh.mjs" }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node tools/codecontext/hooks/reset-inject-dedup.mjs" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node tools/codecontext/hooks/reset-inject-dedup.mjs" }
+        ]
+      }
+    ]
+  }
+}

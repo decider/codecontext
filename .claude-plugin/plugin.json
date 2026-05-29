@@ -1,0 +1,13 @@
+{
+  "name": "codecontext",
+  "description": "LLM-driven auto-documentation for any repo: per-directory AUTO_DOCS.md maps + cross-file system manifests, injected into Claude's context as you read files and kept fresh by a cross-PR refresh hook.",
+  "author": {
+    "name": "decider",
+    "url": "https://github.com/decider"
+  },
+  "homepage": "https://github.com/decider/codecontext",
+  "repository": "https://github.com/decider/codecontext",
+  "license": "MIT",
+  "keywords": ["documentation", "context-injection", "systems-registry", "docgen"],
+  "hooks": "./hooks/hooks.json"
+}

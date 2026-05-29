@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-05-29T10:46:26.087Z",
+  "finishedAt": "2026-05-29T10:58:20.055Z",
+  "minScore": 7,
+  "llmVetEnabled": false,
+  "summary": {
+    "total": 6,
+    "active": 2,
+    "needsReview": 4,
+    "errored": 0,
+    "skippedCache": 0,
+    "skippedOutOfScope": 0,
+    "skippedBudget": 0,
+    "pruned": 1,
+    "built": true,
+    "avgQualityScore": 5.8,
+    "belowBar": [
+      "docgen (3.9)",
+      "context-injection (5.7)",
+      "auto-docs-refresh (6)",
+      "installer (6.6)"
+    ],
+    "tokensEst": 0,
+    "tokenBudget": 10000000,
+    "budgetAborted": false
+  },
+  "pruned": [
+    "_context.md"
+  ],
+  "systems": [
+    {
+      "name": "docgen",
+      "status": "needs-review",
+      "qualityScore": 3.9,
+      "qualityVerdict": "revise",
+      "qualityScores": {
+        "correctness": 4,
+        "completeness": 2,
+        "sizing": 6,
+        "diagram": 4,
+        "clarity": 5,
+        "overall": 3.9
+      },
+      "refineRounds": 1,
+      "reviseAttempts": 0,
+      "skipReason": null,
+      "elapsedMs": 405691,
+      "error": null,
+      "finalProblems": [],
+      "initialProblems": [],
+      "initialVetStatus": "ok",
+      "llmFindings": null
+    },
+    {
+      "name": "systems-registry",
+      "status": "active",
+      "qualityScore": null,
+      "qualityVerdict": null,
+      "qualityScores": null,
+      "refineRounds": 0,
+      "reviseAttempts": 0,
+      "skipReason": null,
+      "elapsedMs": 492649,
+      "error": null,
+      "finalProblems": [],
+      "initialProblems": [],
+      "initialVetStatus": "ok",
+      "llmFindings": null
+    },
+    {
+      "name": "context-injection",
+      "status": "needs-review",
+      "qualityScore": 5.7,
+      "qualityVerdict": "revise",
+      "qualityScores": {
+        "correctness": 5,
+        "completeness": 5,
+        "sizing": 7,
+        "diagram": 7,
+        "clarity": 7,
+        "overall": 5.7
+      },
+      "refineRounds": 1,
+      "reviseAttempts": 0,
+      "skipReason": null,
+      "elapsedMs": 429831,
+      "error": null,
+      "finalProblems": [],
+      "initialProblems": [],
+      "initialVetStatus": "ok",
+      "llmFindings": null
+    },
+    {
+      "name": "auto-docs-refresh",
+      "status": "needs-review",
+      "qualityScore": 6,
+      "qualityVerdict": "revise",
+      "qualityScores": {
+        "correctness": 6,
+        "completeness": 5,
+        "sizing": 7,
+        "diagram": 6,
+        "clarity": 7,
+        "overall": 6
+      },
+      "refineRounds": 1,
+      "reviseAttempts": 0,
+      "skipReason": null,
+      "elapsedMs": 249521,
+      "error": null,
+      "finalProblems": [],
+      "initialProblems": [],
+      "initialVetStatus": "ok",
+      "llmFindings": null
+    },
+    {
+      "name": "installer",
+      "status": "needs-review",
+      "qualityScore": 6.6,
+      "qualityVerdict": "revise",
+      "qualityScores": {
+        "correctness": 6,
+        "completeness": 7,
+        "sizing": 8,
+        "diagram": 5,
+        "clarity": 7,
+        "overall": 6.6
+      },
+      "refineRounds": 1,
+      "reviseAttempts": 0,
+      "skipReason": null,
+      "elapsedMs": 234300,
+      "error": null,
+      "finalProblems": [],
+      "initialProblems": [],
+      "initialVetStatus": "ok",
+      "llmFindings": null
+    },
+    {
+      "name": "telemetry",
+      "status": "active",
+      "qualityScore": 7,
+      "qualityVerdict": "revise",
+      "qualityScores": {
+        "correctness": 7,
+        "completeness": 6,
+        "sizing": 9,
+        "diagram": 8,
+        "clarity": 8,
+        "overall": 7
+      },
+      "refineRounds": 1,
+      "reviseAttempts": 0,
+      "skipReason": null,
+      "elapsedMs": 200673,
+      "error": null,
+      "finalProblems": [],
+      "initialProblems": [],
+      "initialVetStatus": "ok",
+      "llmFindings": null
+    }
+  ]
+}

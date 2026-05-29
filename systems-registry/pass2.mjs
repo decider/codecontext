@@ -1,0 +1,699 @@
+#!/usr/bin/env node
+/**
+ * systems-registry — Pass 2: per-system body generator.
+ *
+ * Consumes one entry from _hypothesis.md (or one hand-authored system
+ * description), reads the system's anchor source code, optionally reads
+ * the prior `docs/systems/<name>.md` for re-anchoring, calls `claude -p`,
+ * and writes the full manifest body.
+ *
+ * Design contract: docs/superpowers/specs/2026-05-25-systems-registry-hypothesis-pass.md
+ *
+ * Fans out N times (one per system in _hypothesis.md). Concurrency cap
+ * lives in the dispatcher (cli.mjs), not here.
+ *
+ * Inputs per call:
+ *   - hypothesisEntry: { name, summary, globs, closes_loop_via, consumes }
+ *   - anchor file content (raw, capped at 4KB each)
+ *   - prior docs/systems/<name>.md if it exists ("validated prior knowledge")
+ *
+ * Output: complete markdown manifest body suitable to write to
+ * docs/systems/<name>.md. Same shape as v1's hand-authored manifests.
+ */
+
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { withRetry } from './llm-retry.mjs';
+import { validateAndRepairBody } from './validate-mermaid.mjs';
+
+// Per-anchor truncation cap. Raised from 4KB → 10KB so a full handler
+// body and its closest helpers fit in the slice the LLM sees.
+// Rationale: a 4KB cap truncates ~80 lines of code, which routinely
+// cuts off the second half of a handler (the part with msg!/emit! +
+// error returns + DB writes). Many systems were silently mis-documented
+// because the generator + judge only saw the first half. 10KB lets a
+// ~200-line handler fit whole. Prompt grows from ~38KB → ~200KB for a
+// 14-glob system (billing-engine) — still well under any model's
+// context window.
+const ANCHOR_BYTE_CAP = 10240;
+
+// Anchor file count caps for the LLM sample. Was a flat 10. Now
+// ADAPTIVE on glob count so a sprawling system (billing-engine: 13
+// globs spanning on-chain Rust + off-chain TS + web) gets more
+// representation than a focused single-glob system. Floor + ceiling
+// bound the cost.
+//
+// Formula: clamp(globs.length * FILES_PER_GLOB, MIN, MAX)
+//
+//   13-glob system → 13*2 = 26 files  (billing-engine; up from 20)
+//    5-glob system → 5*2 = 10 → MIN_ANCHOR_FILES = 15
+//    1-glob system →     MIN = 15
+//   20-glob system → MAX_ANCHOR_FILES = 35
+//
+// Why floor=15: even a 1-glob system benefits from seeing 10-15 files
+// (it usually means the system is one fat dir; we want >1 file there).
+// Why ceiling=35: prompt size scales ~linearly; 35*10KB = 350KB
+// stays comfortably under Opus 4.7's 1M context. Bigger samples start
+// degrading via attention dilution rather than missing-source.
+const FILES_PER_GLOB = 2;
+const MIN_ANCHOR_FILES = 15;
+const MAX_ANCHOR_FILES = 35;
+
+// Allowed source extensions. Same set as before — restricted to text
+// formats the LLM can meaningfully read.
+const SOURCE_EXTS = new Set(['.ts', '.tsx', '.mjs', '.js', '.py', '.md', '.sh', '.rs', '.sql', '.toml']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.tooling', 'target', '__pycache__']);
+
+/**
+ * Score a relative path by filename only — no IO. The goal is to bias
+ * round-robin selection toward the files a HUMAN would read first when
+ * trying to learn a system: READMEs, top-level handlers, route registries,
+ * the parser/writer that bridges on-chain → DB. Tests rank lower than
+ * production code (they document invariants but pollute prompts with
+ * mocks). Migrations rank high because they pin schema. This is a
+ * filename-only heuristic, deliberately portable across languages.
+ *
+ *   *handler.rs / *Handler.ts → +8 (entry points, top priority)
+ *   *strategy*.rs / *_impl.rs  → +8 (BUSINESS LOGIC — the most-missed thing
+ *                                   in auto-generated system docs. A doc
+ *                                   that names the API but not the logic
+ *                                   (`StrategyAccount.compute() is called`)
+ *                                   is the canonical incomplete doc; the
+ *                                   only fix is to make the LLM SEE the
+ *                                   strategy file. Rank ahead of READMEs.)
+ *   *Routes.ts                 → +7 (HTTP routes)
+ *   *Service.ts / *Writer.ts / *Parser.ts / *Projector.ts → +6
+ *   README.md                  → +5 (cheap structured context — still
+ *                                   promoted, but NOT above implementation)
+ *   mod.rs / lib.rs            → +4 (module roots)
+ *   *Cron*.ts / *runX*.ts / cli / index / main / server → +3
+ *   *.sql                      → +3 (migration / schema)
+ *   *.test.*                   → -3 (useful, but lower priority than impl)
+ *   *.d.ts / *.config.*        → -5 (type-only / config noise)
+ *   else                       →  0
+ *
+ * Ranking handlers and business-logic files ABOVE READMEs is deliberate:
+ * READMEs are auto-generated by sister tools (docgen) and may be stale —
+ * grounding the judge in raw source code is more reliable than grounding
+ * it in another auto-generated doc.
+ */
+export function scoreFilename(relPath) {
+  const lower = relPath.toLowerCase();
+  const base = lower.slice(lower.lastIndexOf('/') + 1);
+
+  // Disqualifiers / strong demotions first.
+  if (base.endsWith('.d.ts')) return -5;
+  if (/\.(config|conf)\.(ts|js|mjs)$/.test(base)) return -5;
+  let score = 0;
+  // Handlers and entry points first.
+  if (/^[a-z0-9_-]*handler\.rs$/.test(base)) score += 8;
+  if (/handler\.ts$/.test(base)) score += 8;
+  if (/routes\.ts$/.test(base)) score += 7;
+  // Business logic — strategies, _impl.rs, *_strategy.rs etc. The thing
+  // the doc most often misses. Rank ahead of READMEs.
+  if (/strategy.*\.rs$/.test(base) || /_impl\.rs$/.test(base) || /_strategy\.rs$/.test(base)) score += 8;
+  // Cross-boundary plumbing.
+  if (/(service|writer|parser|projector|reader|keeper)\.ts$/.test(base)) score += 6;
+  // READMEs are cheap structured context but never outrank source code.
+  if (base === 'readme.md') score += 5;
+  // Module roots enumerate the surface.
+  if (base === 'mod.rs' || base === 'lib.rs') score += 4;
+  // Entry points / scripts / migrations.
+  if (/^(cli|index|main|server)\.(ts|mjs|js|rs|py)$/.test(base)) score += 3;
+  if (/^run[A-Z][A-Za-z]+\.(ts|mjs|js)$/.test(base)) score += 3;
+  if (/cron/.test(base)) score += 3;
+  if (base.endsWith('.sql')) score += 3;
+  // Tests inform invariants but mostly bloat the prompt with mocks.
+  if (/\.test\.(ts|mjs|js|py|rs)$/.test(base) || /_test\.(rs|py)$/.test(base)) score -= 3;
+  return score;
+}
+
+/**
+ * Resolve glob patterns to a flat list of files. Supports simple `**`
+ * and basenames; same lightweight semantics as the registry glob matcher.
+ * Kept exported (and stable) so external callers and tests aren't broken
+ * by the new bucketed selection layer above. Used directly by
+ * validate.mjs's input-hash computation.
+ */
+function expandGlobs(repoRoot, globs) {
+  const results = new Set();
+  for (const g of globs || []) {
+    for (const path of expandOneGlob(repoRoot, g)) results.add(path);
+  }
+  return [...results];
+}
+
+/** Expand ONE glob into a list of relative paths. Pure / no dedup. */
+function expandOneGlob(repoRoot, g) {
+  const out = [];
+  if (g.endsWith('/**')) {
+    const baseDir = resolve(repoRoot, g.slice(0, -3));
+    if (existsSync(baseDir)) walkFiles(baseDir, repoRoot, out);
+  } else if (g.includes('*')) {
+    // Lazy: skip unsupported patterns; caller can provide explicit paths
+  } else {
+    const p = resolve(repoRoot, g);
+    if (existsSync(p) && statSync(p).isFile()) {
+      out.push(relative(repoRoot, p));
+    }
+  }
+  return out;
+}
+
+function walkFiles(dir, repoRoot, out) {
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      if (SKIP_DIRS.has(ent.name)) continue;
+      walkFiles(full, repoRoot, out);
+    } else if (ent.isFile()) {
+      const dot = ent.name.lastIndexOf('.');
+      if (dot < 0) continue;
+      const ext = ent.name.slice(dot);
+      if (SOURCE_EXTS.has(ext)) {
+        const rel = relative(repoRoot, full);
+        if (Array.isArray(out)) out.push(rel);
+        else out.add(rel);
+      }
+    }
+  }
+}
+
+/**
+ * Per-glob round-robin selector. Returns up to `maxFiles` relative paths,
+ * drawn so EVERY glob with matching files contributes at least one slot
+ * before any glob contributes a second. Within each glob's bucket, files
+ * are sorted by `scoreFilename` (descending). This solves the "10
+ * alphabetical-first files" bug that left multi-tree systems (Rust+TS+web)
+ * silently Rust-blind to the generator AND the judge — because
+ * `apps/api/...` globs sorted before `apps/backend/...` and exhausted the
+ * old slice(0, 10) before the walk reached the on-chain code.
+ *
+ * Round-robin guarantees fair representation across all globs the system
+ * spec actually declared, regardless of how many files each one matches.
+ * Within a bucket, priority scoring surfaces handlers / routes / parsers
+ * / strategy files before deep-tree leaves, so the slots that DO go to
+ * each bucket carry the highest-signal content for that subsystem.
+ *
+ * `priorAnchorPaths` (optional): file paths the prior manifest's `## Anchors`
+ * section cites by name. These get an EXTRA +20 score within their bucket
+ * so the judge can verify the specific files the doc claims to describe.
+ * Without this, a doc citing `orderTotalCalculator.ts` would have the
+ * judge flag "file not in source excerpt" — the file IS reachable via the
+ * system's globs, but priority-by-filename-suffix alone won't surface it.
+ * Extract via `extractAnchorPathsFromManifest(priorManifest)`.
+ */
+export function selectAnchorFiles(repoRoot, globs, { maxFiles, priorAnchorPaths = [] } = {}) {
+  const effectiveMax = maxFiles ?? computeAdaptiveCap((globs || []).length);
+  const priorSet = new Set(priorAnchorPaths);
+  const buckets = (globs || []).map(g => ({
+    glob: g,
+    files: expandOneGlob(repoRoot, g)
+      .map(p => ({ path: p, score: scoreFilename(p) + (priorSet.has(p) ? 20 : 0) }))
+      // Highest score first; stable tie-break by path so the picker is
+      // deterministic across runs (otherwise the input hash for the
+      // judge's cache flips on every invocation).
+      .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)),
+  }));
+  const picked = new Set();
+  const out = [];
+  while (out.length < effectiveMax) {
+    let progressed = false;
+    for (const b of buckets) {
+      while (b.files.length) {
+        const next = b.files.shift();
+        if (picked.has(next.path)) continue;
+        picked.add(next.path);
+        out.push(next.path);
+        progressed = true;
+        break;
+      }
+      if (out.length >= effectiveMax) break;
+    }
+    if (!progressed) break;
+  }
+  return out;
+}
+
+/** Adaptive cap on anchor files: scales linearly with glob count, clamped. */
+export function computeAdaptiveCap(globCount) {
+  const raw = (globCount || 0) * FILES_PER_GLOB;
+  return Math.max(MIN_ANCHOR_FILES, Math.min(MAX_ANCHOR_FILES, raw));
+}
+
+/**
+ * Walk a manifest body and pull every backtick-quoted path that looks
+ * like a source file. Used to bias `selectAnchorFiles` toward the
+ * specific files the prior doc claims to describe (so the judge can
+ * verify them). Tolerant of trailing fragments after the file extension
+ * (`foo.rs:bar`, `foo.rs#L12`, etc.). Pure / no IO.
+ */
+export function extractAnchorPathsFromManifest(manifestBody) {
+  if (!manifestBody) return [];
+  const out = new Set();
+  const pattern = /`([A-Za-z0-9_./-]+\.(?:ts|tsx|mjs|js|py|rs|md|sh|sql|toml))(?:[:#][^`]*)?`/g;
+  for (const match of manifestBody.matchAll(pattern)) {
+    const p = match[1].replace(/\/+$/, '');
+    if (p.startsWith('/') || p.startsWith('node_modules')) continue;
+    out.add(p);
+  }
+  return [...out];
+}
+
+/**
+ * Read anchor files, capped at ANCHOR_BYTE_CAP each.
+ */
+export function readAnchorFiles(repoRoot, anchorPaths) {
+  return anchorPaths.map(p => {
+    try {
+      const content = readFileSync(resolve(repoRoot, p), 'utf8').slice(0, ANCHOR_BYTE_CAP);
+      return { path: p, content };
+    } catch {
+      return { path: p, content: '(could not read)' };
+    }
+  });
+}
+
+/**
+ * Read prior manifest if it exists. Returns null otherwise.
+ */
+export function readPriorManifest(repoRoot, systemName) {
+  const p = resolve(repoRoot, 'docs/systems', `${systemName}.md`);
+  if (!existsSync(p)) return null;
+  try { return readFileSync(p, 'utf8'); } catch { return null; }
+}
+
+/**
+ * Assemble inputs for a single Pass 2 call.
+ *
+ * Anchor file selection uses `selectAnchorFiles` (per-glob round-robin
+ * + filename-priority) rather than the legacy alphabetical-slice. See
+ * `selectAnchorFiles` for the why. When a prior manifest exists, its
+ * cited file paths are extracted and given priority so the judge can
+ * verify the specific files the doc currently anchors against.
+ */
+export function gatherInputsFor(repoRoot, hypothesisEntry) {
+  const priorManifest = readPriorManifest(repoRoot, hypothesisEntry.name);
+  const priorAnchorPaths = extractAnchorPathsFromManifest(priorManifest);
+  const anchorPaths = selectAnchorFiles(repoRoot, hypothesisEntry.globs, { priorAnchorPaths });
+  return {
+    hypothesisEntry,
+    anchors: readAnchorFiles(repoRoot, anchorPaths),
+    priorManifest,
+  };
+}
+
+// The prior manifest is shown to the regen so it can "update what changed"
+// rather than rewrite from scratch. It MUST include the whole doc — system
+// docs run ~18KB with `## Subflow:` sections near the END, and a tight cap
+// silently truncates those subflows out of the model's view, so the regen
+// drops them (a richness regression). 24KB fits the largest current manifest
+// with headroom and is negligible against the anchor samples already in the
+// prompt + the model's context window.
+export const PRIOR_MANIFEST_MAX_CHARS = 24000;
+
+/**
+ * Build the prompt for one system. Pure function — no IO.
+ */
+export function buildPromptFor(inputs) {
+  const { hypothesisEntry, anchors, priorManifest } = inputs;
+  const parts = [];
+  parts.push('You are writing a complete system manifest for the systems-registry.');
+  parts.push('');
+  parts.push('## Hypothesis entry (the system to document)');
+  parts.push('```yaml');
+  parts.push(`name: ${hypothesisEntry.name}`);
+  if (hypothesisEntry.kind) parts.push(`kind: ${hypothesisEntry.kind}`);
+  parts.push(`summary: ${hypothesisEntry.summary || ''}`);
+  parts.push(`globs:`);
+  for (const g of hypothesisEntry.globs || []) parts.push(`  - ${g}`);
+  if (hypothesisEntry.closes_loop_via) parts.push(`closes_loop_via: ${hypothesisEntry.closes_loop_via}`);
+  parts.push('```');
+  parts.push('');
+
+  parts.push('## Anchor files (current code)');
+  for (const a of anchors) {
+    parts.push(`### ${a.path}`);
+    parts.push('```');
+    parts.push(a.content);
+    parts.push('```');
+    parts.push('');
+  }
+
+  if (priorManifest) {
+    parts.push('## Prior manifest (previously validated — update what changed)');
+    parts.push('```markdown');
+    parts.push(priorManifest.slice(0, PRIOR_MANIFEST_MAX_CHARS));
+    parts.push('```');
+    parts.push('');
+  }
+
+  // Validator feedback from a prior round (refine loop). Placed right
+  // before the task so it's the freshest, highest-priority instruction:
+  // the LLM should produce a NEW manifest that fixes these specifically.
+  if (inputs.feedback) {
+    const fb = inputs.feedback;
+    parts.push('## Reviewer feedback on the PRIOR draft (fix these — highest priority)');
+    parts.push(`A validator scored the prior draft ${fb.scores?.overall ?? '?'}/10 (verdict: ${fb.verdict || '?'}).`);
+    if (fb.sizing_note) parts.push(`Sizing: ${fb.sizing_note}`);
+    if (fb.issues?.length) { parts.push('Issues to fix:'); for (const i of fb.issues) parts.push(`  - ${i}`); }
+    if (fb.missing?.length) { parts.push('Missing from the doc (present in code):'); for (const m of fb.missing) parts.push(`  - ${m}`); }
+    if (fb.suggestions?.length) { parts.push('Concrete edits requested:'); for (const s of fb.suggestions) parts.push(`  - ${s}`); }
+    parts.push('');
+    parts.push('Produce a corrected manifest addressing every point above.');
+    parts.push('');
+  }
+
+  parts.push('## Your task');
+  parts.push('');
+  parts.push('Emit a complete system manifest with this structure:');
+  parts.push('');
+  parts.push('```markdown');
+  parts.push('---');
+  parts.push('name: <kebab-case-name>');
+  parts.push('kind: <copy the kind from the hypothesis entry above verbatim>');
+  parts.push('summary: <1-2 sentence prose>');
+  parts.push('globs:');
+  parts.push('  - <glob1>');
+  parts.push('status: active');
+  parts.push('---');
+  parts.push('');
+  parts.push('# <name>');
+  parts.push('');
+  parts.push('## What it does');
+  parts.push('');
+  parts.push('1-2 sentences. Refer to specific functions / files from the anchor code.');
+  parts.push('');
+  parts.push('## The loop');
+  parts.push('');
+  parts.push('```mermaid');
+  parts.push('flowchart TB');
+  parts.push('  ...nodes describing the actual control flow at the SYSTEM level...');
+  parts.push('```');
+  parts.push('');
+  parts.push('**Mermaid quality bar** — the diagram is the FIRST thing a reader sees, so');
+  parts.push('treat it as a PICTURE, not a transcription. A reader who has never opened');
+  parts.push('the code should understand what the system does in 10 seconds.');
+  parts.push('');
+  parts.push('Five rules, in priority order:');
+  parts.push('');
+  parts.push('1. **Name what each step DOES, not the file it lives in.** Bad: `pass2.mjs`.');
+  parts.push('   Good: `Generate body per system`. File paths belong in Anchors, not the');
+  parts.push('   diagram.');
+  parts.push('');
+  parts.push('2. **Label every edge with what FLOWS between nodes** — artifacts, payloads,');
+  parts.push('   status. This is the single biggest readability lever:');
+  parts.push('   - Bad:  `A --> B`');
+  parts.push('   - Good: `A -->|_hypothesis.md| B`   `A -->|draft manifest| B`   `A -->|fixable issues| R`');
+  parts.push('   An unlabeled arrow tells the reader nothing about the system.');
+  parts.push('');
+  parts.push('3. **Group related steps with `subgraph <Phase>`.** Carve the system into');
+  parts.push('   2-4 phases the eye can scan separately. For pipelines that\'s often');
+  parts.push('   `subgraph Detect`, `subgraph Generate`, `subgraph QA`, `subgraph Publish`.');
+  parts.push('   No subgraphs = a wall of boxes; the reader has to do the chunking.');
+  parts.push('');
+  parts.push('4. **≤ 10 nodes outside subgraphs (≤ 15 total).** If you would need more,');
+  parts.push('   you are listing every function call. Collapse linear chains');
+  parts.push('   (`A → B → C → D`) into one node ("decode + score + persist") unless one');
+  parts.push('   of them is a decision point. Skip happy-path-only error paths');
+  parts.push('   (`try/finally` cleanup, lock release) — those are footnotes in prose.');
+  parts.push('');
+  parts.push('5. **Use decision diamonds `{label?}` for branches**, with `-->|yes|` /');
+  parts.push('   `-->|no|` (or whatever the cases are). Zero diamonds = the diagram is a');
+  parts.push('   list, not a control-flow. Aim for ≥2 diamonds in any branching system.');
+  parts.push('');
+  parts.push('### Example: GOOD vs BAD for the same system');
+  parts.push('');
+  parts.push('Bad — code transcription, names files, no edge labels, no subgraphs, no diamonds:');
+  parts.push('');
+  parts.push('```mermaid');
+  parts.push('flowchart TB');
+  parts.push('  A[detect.mjs] --> B[pass1.mjs]');
+  parts.push('  B --> C[pass2.mjs]');
+  parts.push('  C --> D[pass25-vet.mjs]');
+  parts.push('  D --> E[pass26-revise.mjs]');
+  parts.push('  D --> F[validate.mjs]');
+  parts.push('  F --> G[refine.mjs]');
+  parts.push('  G --> H[organize.mjs]');
+  parts.push('  H --> I[composite.mjs]');
+  parts.push('  I --> J[build-static.mjs]');
+  parts.push('  J --> K[inject.mjs]');
+  parts.push('  K --> L[next Claude turn]');
+  parts.push('```');
+  parts.push('');
+  parts.push('Good — verbs, labeled edges, subgraphs, decision diamonds:');
+  parts.push('');
+  parts.push('```mermaid');
+  parts.push('flowchart TB');
+  parts.push('  subgraph Detect');
+  parts.push('    P0[Pass 0: 8-signal heuristic]');
+  parts.push('  end');
+  parts.push('  subgraph Generate');
+  parts.push('    P1[Pass 1: LLM hypothesis]');
+  parts.push('    P2[Pass 2: body per system]');
+  parts.push('  end');
+  parts.push('  subgraph QA');
+  parts.push('    V{vet passes?}');
+  parts.push('    R[Pass 2.6 revise &lt;=2 retries]');
+  parts.push('    J{score &gt;= min?}');
+  parts.push('  end');
+  parts.push('  subgraph Publish');
+  parts.push('    O[organize + composite + static HTML]');
+  parts.push('  end');
+  parts.push('  P0 -->|candidates| P1');
+  parts.push('  P1 -->|_hypothesis.md| P2');
+  parts.push('  P2 -->|draft manifest| V');
+  parts.push('  V -->|fixable issues| R');
+  parts.push('  R -->|revised manifest| V');
+  parts.push('  V -->|ok or unfixable| J');
+  parts.push('  J -->|no| F[refine: regen + judge]');
+  parts.push('  F -.->|until score| J');
+  parts.push('  J -->|yes| O');
+  parts.push('  O -->|README + .html| I[inject PreToolUse hook]');
+  parts.push('  I -.->|Mermaid + page link| C((next Claude turn))');
+  parts.push('  C -.->|edits a globbed file| P0');
+  parts.push('```');
+  parts.push('');
+  parts.push('Same node count — different shape. The reader instantly sees four phases,');
+  parts.push('what each phase produces, where the branches are, and how the loop closes.');
+  parts.push('');
+  parts.push('<!-- OPTIONAL: include one or more `## Subflow: <name>` sections after');
+  parts.push('     the primary loop when the system covers >3 independent flows that');
+  parts.push('     don\'t share state. Each subflow gets its OWN mermaid diagram');
+  parts.push('     drilling into that specific sub-flow. Keep the primary `## The');
+  parts.push('     loop` at the system level showing how the subflows feed each');
+  parts.push('     other or the system\'s overall lifecycle. See "Rules" below for');
+  parts.push('     when to use this and when to flag for splitting instead. -->');
+  parts.push('');
+  parts.push('## Anchors');
+  parts.push('');
+  parts.push('**3 to 5 load-bearing files only.** Anchors are the files a reader MUST read');
+  parts.push('first; the FULL list of files this system covers is in `globs` in the');
+  parts.push('front-matter. Do NOT pad with LICENSE files, mechanical helpers, or READMEs');
+  parts.push('that just describe the dir.');
+  parts.push('');
+  parts.push('- `path1` — what it does (one phrase)');
+  parts.push('- `path2` — ...');
+  parts.push('');
+  parts.push('## Closing arrow');
+  parts.push('');
+  parts.push('How the loop closes (state file, spawn, network call, next Claude turn, etc).');
+  parts.push('');
+  parts.push('**Omit this section entirely** when `kind:` is `installer` or `gate` — those');
+  parts.push('do not loop, and fabricating a closing arrow ("the CI check-run pings the PR');
+  parts.push('page") strains the framing and tanks the quality score. Instead write:');
+  parts.push('');
+  parts.push('  > _One-shot — see `kind: <kind>` in front-matter. No closing arrow._');
+  parts.push('');
+  parts.push('<!-- OPTIONAL: ## Decision logic — REQUIRED when the system MAKES');
+  parts.push('     decisions / executes a policy (a strategy, a router, a');
+  parts.push('     ranker, an autotuner, a scheduler picking what to run');
+  parts.push('     next). Describe HOW the decision is computed, not just the');
+  parts.push('     API surface. e.g. "yield-maximizer weights regions');
+  parts.push('     proportional to 1/pm25 * 1/price; cap to 1 sell + 1 buy".');
+  parts.push('     2-6 sentences citing the actual functions / constants. If');
+  parts.push('     the system is pure plumbing (parses, indexes, serves) and');
+  parts.push('     makes no decisions, omit this section. -->');
+  parts.push('');
+  parts.push('## Log flow');
+  parts.push('');
+  parts.push('Every cross-subsystem log marker / emitted event / webhook signal');
+  parts.push('the system uses to communicate. One row per marker — do not collapse');
+  parts.push('multiple markers into "etc.". This is the table operators grep when');
+  parts.push('investigating production, so missing rows defeat the doc.');
+  parts.push('');
+  parts.push('| Marker / Event | Emitter (file:fn) | Fields | Consumer | Lands in |');
+  parts.push('|---|---|---|---|---|');
+  parts.push('| `📊 EXAMPLE v1 ...` | `path/to/file.rs:emit_fn` | a, b, c | `parser.ts:parse` | `db_table` |');
+  parts.push('');
+  parts.push('Only document markers that CROSS a subsystem boundary (on-chain →');
+  parts.push('off-chain parser, cron → DB, webhook → consumer). Pure intra-handler');
+  parts.push('debug `msg!()` lines are not in scope — they would bloat the table.');
+  parts.push('');
+  parts.push('## Data tables');
+  parts.push('');
+  parts.push('Every persistent table or file-on-disk the system reads OR writes,');
+  parts.push('with both endpoints named. Missing the READER side is the most');
+  parts.push('common doc bug (writers are obvious from grepping `INSERT`; readers');
+  parts.push('require knowing which dashboard / API surface consumes the row).');
+  parts.push('');
+  parts.push('| Table / File | Schema / Migration | Writer (file:fn) | Reader (file:fn) | Purpose |');
+  parts.push('|---|---|---|---|---|');
+  parts.push('| `example_events` | `migrations/018.sql` | `parser.ts:processX` | `handler.ts:queryX` | What it represents |');
+  parts.push('');
+  parts.push('## Invariants');
+  parts.push('');
+  parts.push('- 2-5 bullets. Prefer numeric constants with file:line anchors.');
+  parts.push('');
+  parts.push('## Failure modes');
+  parts.push('');
+  parts.push('- 2-5 bullets');
+  parts.push('');
+  parts.push('## Where to start reading');
+  parts.push('');
+  parts.push('1. path1 — why first');
+  parts.push('2. ...');
+  parts.push('```');
+  parts.push('');
+  parts.push('Rules:');
+  parts.push('- Reference only files/symbols visible in the anchor code above.');
+  parts.push('- The Mermaid loop must describe the actual code, not a generic template.');
+  parts.push('- Use simple Mermaid: quote labels with special chars, no nested brackets.');
+  parts.push('- If prior manifest exists, preserve what is still true; update only what changed.');
+  parts.push('');
+  parts.push('Subflows (progressive disclosure):');
+  parts.push('- If the system covers >3 INDEPENDENT flows (e.g. an on-chain');
+  parts.push('  instruction set with separate `collect` / `distribute` / `cleanup`');
+  parts.push('  paths; a frontend with separate `swap` / `billing` / `session-auth`');
+  parts.push('  page flows; a cron orchestrator dispatching several cycle types),');
+  parts.push('  emit each as a `## Subflow: <kebab-case-name>` heading followed by');
+  parts.push('  a one-sentence description and ITS OWN ```mermaid block. Each');
+  parts.push('  subflow diagram drills into that specific path; the primary');
+  parts.push('  `## The loop` stays at the system level.');
+  parts.push('- "Independent" means the flows don\'t share state mid-cycle. A');
+  parts.push('  single linear pipeline with stages is one loop, not subflows. A');
+  parts.push('  set of sibling instructions / cycle types / page flows IS subflows.');
+  parts.push('- Cap subflow diagrams at ~8 nodes each. If a subflow needs more,');
+  parts.push('  it\'s probably its own system — flag it (see below) and let the');
+  parts.push('  maintainer split.');
+  parts.push('');
+  parts.push('When the system is too big for subflows (splitting-candidate flag):');
+  parts.push('- If you\'d need >6 subflows to cover this system OR the body would');
+  parts.push('  exceed ~12 KB even with subflows, do NOT cram everything in.');
+  parts.push('  Instead, write subflows for the most-important 4-5 sub-paths AND');
+  parts.push('  add a `## Notes` section at the end with this exact form:');
+  parts.push('');
+  parts.push('    ## Notes');
+  parts.push('');
+  parts.push('    **Splitting candidate.** This system covers N distinct sub-flows.');
+  parts.push('    Consider promoting <name-a>, <name-b>, <name-c> to their own');
+  parts.push('    system pages with cross-references back here. Sub-paths not');
+  parts.push('    detailed above: <list>.');
+  parts.push('');
+  parts.push('  This is the human-review hand-off — DO NOT silently elide flows.');
+  parts.push('  The maintainer reads the Notes line and decides whether to split.');
+  parts.push('');
+  parts.push('Output the complete markdown manifest now (no preamble, no postscript):');
+
+  return parts.join('\n');
+}
+
+function callClaude(prompt, { model = 'claude-opus-4-7', timeoutMs = 12 * 60_000 } = {}) {
+  return withRetry(() => new Promise((resolve, reject) => {
+    const args = ['-p', '--model', model, '--output-format', 'text'];
+    const child = spawn('claude', args);
+    const chunks = []; const errs = [];
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`claude -p timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.stdout.on('data', c => chunks.push(c));
+    child.stderr.on('data', c => errs.push(c));
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code === 0) resolve(Buffer.concat(chunks).toString('utf8'));
+      else reject(new Error(`claude -p exited ${code}: ${Buffer.concat(errs).toString('utf8').slice(0, 500)}`));
+    });
+    child.on('error', e => { clearTimeout(timer); reject(e); });
+    child.stdin.end(prompt);
+  }));
+}
+
+/**
+ * Strip code-fence wrapping if the LLM emitted the manifest inside
+ * ```markdown ... ``` (it sometimes does despite the "no preamble" instruction).
+ */
+function stripCodeFence(text) {
+  const trimmed = text.trim();
+  // 1. Whole response is a single fence.
+  let m = trimmed.match(/^```(?:markdown|md)?\n([\s\S]*?)\n```\s*$/);
+  if (m) return m[1].trim();
+  // 2. LLM added preamble/postamble around a fenced block — take the first
+  //    fenced block that contains front-matter (the real manifest).
+  const fenceRe = /```(?:markdown|md)?\n([\s\S]*?)\n```/g;
+  let block;
+  while ((block = fenceRe.exec(trimmed)) !== null) {
+    if (block[1].trimStart().startsWith('---')) return block[1].trim();
+  }
+  // 3. No fence but front-matter present somewhere — slice from first `---`.
+  const fmIdx = trimmed.indexOf('---\n');
+  if (fmIdx !== -1) return trimmed.slice(fmIdx).trim();
+  return trimmed;
+}
+
+/**
+ * Pass 2 entry for a single system. Runner is injectable for tests.
+ */
+export async function generateBody(repoRoot, hypothesisEntry, { runner, model, write = true, feedback = null } = {}) {
+  const inputs = gatherInputsFor(repoRoot, hypothesisEntry);
+  // Optional validator feedback (from refine.mjs) — threaded into the
+  // prompt so a regen run can act on the judge's concrete suggestions
+  // instead of starting cold.
+  inputs.feedback = feedback;
+  const prompt = buildPromptFor(inputs);
+  const response = runner
+    ? await runner(prompt)
+    : await callClaude(prompt, { model });
+  const body = stripCodeFence(response);
+  // Mark the manifest as auto-generated so a future agent / human knows
+  // not to hand-edit it. Inserted AFTER the closing `---` of the YAML
+  // front-matter so parseGlobsFromFrontMatter and friends still work
+  // (they anchor on `^---\n`).
+  const stamped = stampAutoGenerated(body);
+  // Post-generation: deterministic mermaid validator + small-model
+  // auto-repair. Catches the syntax bugs that cause Mermaid 10 to
+  // throw "translate(undefined, NaN)" warnings at render time and
+  // leave a blank diagram on the page. Best-effort — anything that
+  // doesn't repair in 2 rounds passes through unchanged for the
+  // pass25-vet stage to flag as needs-review.
+  const purpose = hypothesisEntry.summary || hypothesisEntry.name;
+  const { body: validated, log: validateLog } = await validateAndRepairBody(stamped, {
+    runner: runner
+      ? (prompt) => runner(prompt)
+      : (prompt) => callClaude(prompt, { model }),
+    surfacePurpose: purpose,
+    maxRounds: 2,
+  });
+  let outPath = null;
+  if (write) {
+    outPath = resolve(repoRoot, 'docs/systems', `${hypothesisEntry.name}.md`);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, validated);
+  }
+  return { inputs, prompt, response, body: validated, outPath, validateLog };
+}
+
+/** Idempotently prepend the auto-generated warning right after the YAML
+ *  front-matter. Returns the original body unchanged if either the
+ *  warning is already there or the body has no front-matter. */
+export function stampAutoGenerated(body) {
+  if (!body || body.includes('auto-generated by systems-registry')) return body;
+  const fmEnd = body.indexOf('\n---', 4);
+  if (fmEnd === -1) return body;
+  const splitAt = fmEnd + 4;
+  const warning = '\n<!-- auto-generated by systems-registry — do not hand-edit. Run `tools/systems-registry/cli.mjs run` (full sweep) or `tools/systems-registry/cli.mjs refresh --changed <files>` (incremental) to refresh. -->\n';
+  return body.slice(0, splitAt) + warning + body.slice(splitAt);
+}
+
+export const _internal = { expandGlobs, expandOneGlob, stripCodeFence, ANCHOR_BYTE_CAP, MAX_ANCHOR_FILES, MIN_ANCHOR_FILES, FILES_PER_GLOB };

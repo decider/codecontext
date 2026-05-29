@@ -1,0 +1,29 @@
+name: test
+
+# Runs the unit + integration test suite on every PR and on every push
+# to main. Pure node --test (no LLM calls), so it's fast and free.
+#
+# Consumer repos bump this plugin as a submodule; this workflow is the
+# safety net that prevents a bad
+# `body.match` (or similar) from landing on main and propagating out
+# via the next consumer bump.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run tests
+        run: node --test

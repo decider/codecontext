@@ -1,0 +1,15 @@
+{
+  "description": "Two clean dir-rooted systems — should be detected by the heuristic.",
+  "minScore": 4,
+  "expectedSystems": [
+    {
+      "name": "apps-foo",
+      "minSignals": ["coordinator", "persistent-state", "loop", "subprocess", "tests", "spec-or-readme"]
+    },
+    {
+      "name": "tools-bar",
+      "minSignals": ["coordinator", "persistent-state", "loop", "subprocess", "tests", "spec-or-readme"]
+    }
+  ],
+  "unexpectedSystems": []
+}

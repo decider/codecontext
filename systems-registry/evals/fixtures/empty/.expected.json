@@ -1,0 +1,6 @@
+{
+  "description": "Empty repo — Pass 0 should return no candidates, gracefully.",
+  "minScore": 4,
+  "expectedSystems": [],
+  "unexpectedSystems": []
+}

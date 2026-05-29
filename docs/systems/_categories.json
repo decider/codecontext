@@ -1,0 +1,32 @@
+{
+  "categories": [
+    {
+      "name": "Documentation Automation",
+      "systems": [
+        "docgen",
+        "auto-docs-refresh",
+        "systems-registry"
+      ]
+    },
+    {
+      "name": "Context Integration",
+      "systems": [
+        "context-injection"
+      ]
+    },
+    {
+      "name": "Observability & Tuning",
+      "systems": [
+        "telemetry"
+      ]
+    },
+    {
+      "name": "System Initialization",
+      "systems": [
+        "installer"
+      ]
+    }
+  ],
+  "generatedAt": "2026-05-29T10:58:19.955Z",
+  "generator": "claude-opus-4-7"
+}

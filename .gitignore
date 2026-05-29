@@ -1,0 +1,11 @@
+# Local test artifacts
+node_modules/
+.DS_Store
+*.log
+*.tmp
+
+# Per-repo state docgen writes (consumers own this)
+.docgen/
+
+# Built site output (consumers build their own)
+dist/

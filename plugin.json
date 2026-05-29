@@ -1,0 +1,42 @@
+{
+  "name": "codecontext",
+  "version": "0.1.0",
+  "description": "LLM-driven auto-documentation for any repo: per-directory AUTO_DOCS maps + cross-file system manifests + cross-PR refresh hook.",
+  "engines": {
+    "node": ">=20",
+    "claude-cli": ">=2.0"
+  },
+  "capabilities": {
+    "docgen": {
+      "binary": "docgen/docgen",
+      "engine": "docgen/docgen.mjs",
+      "hook": "docgen/inject-readme-context.mjs",
+      "validator": "docgen/validate-readme.mjs",
+      "batch_validator": "docgen/validate-all.mjs"
+    },
+    "systems_registry": {
+      "cli": "systems-registry/cli.mjs",
+      "hook": "systems-registry/inject.mjs",
+      "validator": "systems-registry/validate.mjs",
+      "batch_validator": "systems-registry/validate-all.mjs",
+      "viewer": "systems-registry/view.mjs",
+      "static_build": "systems-registry/build-static.mjs"
+    },
+    "refresh_hook": {
+      "post_tool_use": "hooks/auto-docs-refresh.mjs"
+    }
+  },
+  "judge": {
+    "default": "claude -p",
+    "env_overrides": {
+      "docgen": "DOCGEN_JUDGE_CMD",
+      "systems_registry": "SYSREG_JUDGE_CMD"
+    },
+    "comment": "Set to 'codex exec' or 'gemini -p' for cross-model validation."
+  },
+  "host_repo_contract": {
+    "directories": ["docs/systems"],
+    "optional_files": ["docs/systems/_context.md"],
+    "settings_merge": "hooks/settings.json"
+  }
+}

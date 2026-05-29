@@ -1,0 +1,15 @@
+{
+  "name": "codecontext",
+  "owner": {
+    "name": "decider",
+    "url": "https://github.com/decider"
+  },
+  "description": "Single-plugin marketplace for codecontext — LLM-driven auto-documentation + context injection for any repo.",
+  "plugins": [
+    {
+      "name": "codecontext",
+      "source": "./",
+      "description": "Per-directory AUTO_DOCS.md maps + cross-file system manifests injected into Claude's context as you read files, kept fresh by a cross-PR refresh hook."
+    }
+  ]
+}
