@@ -333,3 +333,26 @@ describe('vet skips npm scoped package specifiers', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe('empty kind: front-matter does not crash the vet', () => {
+  // Regression: parseFrontMatter yields [] for an empty `kind:` line, and []
+  // is truthy, so `(frontMatter.kind || '').toLowerCase()` threw a TypeError
+  // and took down the whole refresh on any manifest with a blank kind.
+  it('findMissingSections treats a non-string kind ([]) as unset', () => {
+    assert.doesNotThrow(() => _internal.findMissingSections('# x', { kind: [] }));
+    // unset kind => not in KINDS_WITHOUT_CLOSING_ARROW => Closing arrow required
+    const missing = _internal.findMissingSections('# x', { kind: [] });
+    assert.ok(missing.includes('Closing arrow'));
+  });
+
+  it('cheapVet survives a manifest whose kind: line is blank', () => {
+    const root = makeFixture();
+    const body = GOOD_BODY.replace('status: active', 'kind:\nstatus: active');
+    try {
+      const p = writeManifest(root, 'apps-foo', body);
+      let r;
+      assert.doesNotThrow(() => { r = cheapVet(root, p); });
+      assert.deepEqual(r.problems, []);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

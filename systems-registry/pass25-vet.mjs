@@ -84,7 +84,11 @@ function findMissingSections(body, frontMatter) {
   // Closing arrow is required UNLESS `kind:` says the system doesn't loop.
   // Forcing a closing arrow on one-shots strains the framing and tanks
   // scores; the Pass 2 prompt now tells the LLM to omit it for these kinds.
-  const kind = (frontMatter?.kind || '').toLowerCase();
+  // `kind` is a scalar string, but parseFrontMatter yields [] for an empty
+  // `kind:` line (no list/map children follow), and [] is truthy — so the
+  // old `kind || ''` left a non-string and `.toLowerCase()` threw. Treat any
+  // non-string (empty array, null, number) as unset.
+  const kind = (typeof frontMatter?.kind === 'string' ? frontMatter.kind : '').toLowerCase();
   if (!KINDS_WITHOUT_CLOSING_ARROW.has(kind)) {
     if (!/^##\s+Closing arrow\b/m.test(body)) missing.push('Closing arrow');
   }
