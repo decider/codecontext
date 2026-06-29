@@ -120,3 +120,68 @@ describe('refreshIncremental with mocked runner', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe('refreshIncremental preserve-and-retry (additive subflow recovery)', () => {
+  // foo-system manifest that ALREADY ships two mermaid subflows worth protecting.
+  function fixtureWithFooSubflows() {
+    const root = makeFixture();
+    writeFileSync(join(root, 'docs/systems/foo-system.md'),
+      '---\nname: foo-system\nsummary: the foo\nglobs:\n  - apps/foo/**\nstatus: active\n---\n\n' +
+      '# foo-system\n\n## The loop\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n' +
+      '## Subflow: alpha\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n' +
+      '## Subflow: beta\n\n```mermaid\nflowchart LR\n  A --> B\n```\n');
+    return root;
+  }
+  // A regenerated body carrying exactly the named subflows (plus required sections).
+  const bodyWith = (subflows) =>
+    '---\nname: foo-system\nsummary: REGEN foo\nglobs:\n  - apps/foo/**\nstatus: active\n---\n\n' +
+    '# foo-system\n\n## What it does\nx\n\n## The loop\n```mermaid\nflowchart LR\n a-->b\n```\n\n' +
+    subflows.map((n) => `## Subflow: ${n}\n\n\`\`\`mermaid\nflowchart LR\n  A --> B\n\`\`\`\n`).join('\n') +
+    '\n## Anchors\n- `apps/foo/run.mjs` — x\n\n## Closing arrow\nstate\n\n## Invariants\n- x\n\n' +
+    '## Failure modes\n- y\n\n## Where to start reading\n1. apps/foo/run.mjs\n';
+
+  it('retries with must-keep feedback and recovers a dropped subflow', async () => {
+    const root = fixtureWithFooSubflows();
+    try {
+      const runner = async (prompt) => {
+        if (prompt.includes('writing a complete system manifest')) {
+          // The retry prompt carries the must-keep feedback → restore beta.
+          // The first (un-fed) pass drops it.
+          return prompt.includes('DROPPED mermaid subflow')
+            ? bodyWith(['alpha', 'beta'])
+            : bodyWith(['alpha']);
+        }
+        if (prompt.includes('organizing a repository')) {
+          return '{"categories":[{"name":"Apps","systems":["foo-system","bar-system"]}]}';
+        }
+        return '{}';
+      };
+      const r = await refreshIncremental(root, ['apps/foo/score.mjs'], { write: () => {}, runner });
+      assert.equal(r.regenerated.length, 1);
+      assert.equal(r.regenerated[0].status, 'active'); // recovered — NOT kept-prior
+      const out = readFileSync(join(root, 'docs/systems/foo-system.md'), 'utf8');
+      assert.match(out, /## Subflow: alpha/);
+      assert.match(out, /## Subflow: beta/); // the retry brought beta back
+      assert.match(out, /REGEN foo/); // it's the regenerated body, not the restored prior
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the prior doc when even the retry still drops a subflow', async () => {
+    const root = fixtureWithFooSubflows();
+    const priorFoo = readFileSync(join(root, 'docs/systems/foo-system.md'), 'utf8');
+    try {
+      const runner = async (prompt) => {
+        // Always drops beta, feedback or not → guard must keep the prior.
+        if (prompt.includes('writing a complete system manifest')) return bodyWith(['alpha']);
+        if (prompt.includes('organizing a repository')) {
+          return '{"categories":[{"name":"Apps","systems":["foo-system","bar-system"]}]}';
+        }
+        return '{}';
+      };
+      const r = await refreshIncremental(root, ['apps/foo/score.mjs'], { write: () => {}, runner });
+      assert.equal(r.regenerated[0].status, 'kept-prior');
+      // Prior restored verbatim — no regression shipped.
+      assert.equal(readFileSync(join(root, 'docs/systems/foo-system.md'), 'utf8'), priorFoo);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

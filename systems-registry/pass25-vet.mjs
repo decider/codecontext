@@ -128,7 +128,8 @@ export function findSubflows(body) {
  * Anti-regression check for incremental refresh: a regen must not silently
  * DROP `## Subflow:` sections (each with its own Mermaid diagram) that the
  * prior, previously-shipped manifest had. Returns one `subflow-regression`
- * problem naming the dropped subflows, or `[]` when nothing was lost.
+ * problem — naming the dropped subflows in `.detail` and listing them in a
+ * `.dropped` array (lowercased) for callers — or `[]` when nothing was lost.
  *
  * Only mermaid-bearing subflows count on both sides — a stub heading with no
  * diagram isn't richness worth protecting. Comparison is case-insensitive on
@@ -146,6 +147,9 @@ export function checkSubflowRegression(priorBody, currentBody) {
   return [{
     kind: 'subflow-regression',
     detail: `regen dropped ${dropped.length} mermaid subflow(s) the prior manifest had: ${dropped.join(', ')}`,
+    // The dropped subflow names (lowercased), so callers (refresh's
+    // preserve-and-retry) can feed them straight back as must-keep guidance.
+    dropped,
   }];
 }
 

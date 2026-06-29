@@ -17,6 +17,11 @@ describe('checkSubflowRegression', () => {
     assert.match(probs[0].detail, /beta/);
   });
 
+  it('lists the dropped subflow names in a `dropped` array (for the retry)', () => {
+    const probs = checkSubflowRegression(DOC('alpha', 'beta', 'gamma'), DOC('alpha'));
+    assert.deepEqual(probs[0].dropped, ['beta', 'gamma']);
+  });
+
   it('passes when all prior subflows are preserved (order/extra additions OK)', () => {
     assert.deepEqual(checkSubflowRegression(DOC('alpha', 'beta'), DOC('beta', 'alpha', 'gamma')), []);
   });
