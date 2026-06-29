@@ -86,14 +86,42 @@ export function computeImpact(repoRoot, changedFiles) {
   return { impacted, newCandidates, skip, manifestCount: manifests.length };
 }
 
-async function genVetRevise(repoRoot, entry, { runner }) {
-  // Capture the prior, previously-shipped manifest BEFORE generateBody
-  // overwrites it — the anti-regression guard compares against it, and even
-  // the revise pass only ever sees the (possibly thinner) regen on disk.
-  const manifestPath = resolve(repoRoot, 'docs/systems', `${entry.name}.md`);
-  const originalBody = existsSync(manifestPath) ? readFileSync(manifestPath, 'utf8') : '';
+/**
+ * Must-keep feedback for a retry after a subflow regression, in pass-2's
+ * structured `feedback` shape ({ verdict, issues, missing, suggestions }) — the
+ * same channel the refine loop uses, threaded into the regen prompt as the
+ * highest-priority instruction. The prior, already-shipped manifest carried
+ * these mermaid subflows and the fresh regen dropped them; tell the model to
+ * retain every one (additive — never drop).
+ */
+function keepSubflowFeedback(dropped) {
+  return {
+    verdict: 'subflow-regression',
+    issues: [
+      'Your previous draft DROPPED mermaid subflow diagrams that the prior, ' +
+        'already-shipped version of this doc had. Dropping a prior subflow is a ' +
+        'regression and will be rejected.',
+    ],
+    missing: dropped.map(
+      (n) =>
+        `Subflow "${n}" — restore it as its own "## Subflow: ${n}" heading with its ` +
+        'own ```mermaid diagram (it was in the prior version and must be kept).',
+    ),
+    suggestions: [
+      'Keep EVERY prior subflow and only ADD new ones for newer code; never drop ' +
+        'one the prior version had.',
+    ],
+  };
+}
 
-  const p2 = await generateBody(repoRoot, entry, { runner });
+/**
+ * One generate → static-vet → revise-if-fixable cycle. Returns the body left on
+ * disk, the vet verdict, the revise-attempt count, and the manifest path. An
+ * optional `feedback` string is threaded into the regen prompt (used by the
+ * preserve-and-retry path below).
+ */
+async function genVetReviseOnce(repoRoot, entry, { runner, feedback = null }) {
+  const p2 = await generateBody(repoRoot, entry, { runner, feedback });
   let vet = await vetSystem(repoRoot, p2.outPath, { llm: false, runner });
   let attempts = 0;
   if (vet.status === 'issues' && hasFixable(vet.problems)) {
@@ -101,21 +129,47 @@ async function genVetRevise(repoRoot, entry, { runner }) {
     attempts = revised.attempts.length;
     vet = { status: revised.finalStatus, problems: revised.finalProblems };
   }
+  const body = existsSync(p2.outPath) ? readFileSync(p2.outPath, 'utf8') : '';
+  return { body, vet, attempts, outPath: p2.outPath };
+}
+
+async function genVetRevise(repoRoot, entry, { runner }) {
+  // Capture the prior, previously-shipped manifest BEFORE generateBody
+  // overwrites it — the anti-regression guard compares against it, and even
+  // the revise pass only ever sees the (possibly thinner) regen on disk.
+  const manifestPath = resolve(repoRoot, 'docs/systems', `${entry.name}.md`);
+  const originalBody = existsSync(manifestPath) ? readFileSync(manifestPath, 'utf8') : '';
+
+  let r = await genVetReviseOnce(repoRoot, entry, { runner });
+  let attempts = r.attempts;
+  let regression = checkSubflowRegression(originalBody, r.body);
+
+  // Preserve-and-retry: an ADDITIVE change (a new subsystem layered onto an
+  // already-rich doc) can make a single regen drop prior subflows while it adds
+  // the new one. Rather than give up immediately, regenerate ONCE more telling
+  // the model exactly which subflows it must keep. The guard itself never
+  // weakens — we only fall back to keep-prior if the retry ALSO regresses.
+  if (regression.length > 0 && regression[0].dropped?.length) {
+    const retry = await genVetReviseOnce(repoRoot, entry, {
+      runner, feedback: keepSubflowFeedback(regression[0].dropped),
+    });
+    attempts += retry.attempts + 1;
+    r = retry;
+    regression = checkSubflowRegression(originalBody, retry.body);
+  }
 
   // Anti-regression guard: a refresh must never ship a manifest that DROPS
-  // mermaid subflows the prior had. If the regen (even after revise) lost
-  // any, restore the richer original rather than regress the doc. The prior
-  // was already a shipped, validated manifest, so keeping it is strictly
-  // safe; the change is simply skipped and surfaced for a deeper `run`.
-  const finalBody = existsSync(p2.outPath) ? readFileSync(p2.outPath, 'utf8') : '';
-  const regression = checkSubflowRegression(originalBody, finalBody);
+  // mermaid subflows the prior had. If even the retry lost any, restore the
+  // richer original rather than regress the doc. The prior was already a
+  // shipped, validated manifest, so keeping it is strictly safe; the change is
+  // simply skipped and surfaced for a deeper `run`.
   if (regression.length > 0) {
-    writeFileSync(p2.outPath, originalBody);
+    writeFileSync(r.outPath, originalBody);
     return { name: entry.name, status: 'kept-prior', attempts, regression: regression[0].detail };
   }
 
-  const onlyUnfixable = vet.status === 'issues' && !hasFixable(vet.problems);
-  return { name: entry.name, status: (vet.status === 'ok' || onlyUnfixable) ? 'active' : 'needs-review', attempts };
+  const onlyUnfixable = r.vet.status === 'issues' && !hasFixable(r.vet.problems);
+  return { name: entry.name, status: (r.vet.status === 'ok' || onlyUnfixable) ? 'active' : 'needs-review', attempts };
 }
 
 export async function refreshIncremental(repoRoot, changedFiles, {
