@@ -178,6 +178,11 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 // generation on Opus — that's the higher-judgment, lower-volume work.)
 export const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
+// How many times to (re)generate a directory's doc before giving up. The model
+// occasionally returns meta-narration instead of the doc (the trunk-doc bug);
+// generation is stochastic, so a retry usually recovers. See analyzeOne.
+const DEFAULT_GEN_ATTEMPTS = 3;
+
 // ─── repo + state ─────────────────────────────────────────────────────────
 
 function repoRoot() {
@@ -474,6 +479,25 @@ export function parseVersion(text) {
 // ─── portable inputs-hash (cross-clone / cross-worktree skip) ───────────────
 
 const INPUTS_HASH_RE = /<!--\s*docgen:inputs=([0-9a-f]+)\s*-->/;
+
+/**
+ * Cheap structural gate: does `body` look like a docgen doc (opens with a `## `
+ * heading) rather than model meta-narration ("README written at …", "The file
+ * already exists … Let me compare …")? The generation prompt mandates a
+ * `## Purpose`-led body, so a response with no leading heading is the model
+ * narrating its own action instead of writing the doc — the trunk-doc failure
+ * mode. This is a POSITIVE check (real docs have structure), so it catches every
+ * phrasing rather than blocklisting known-bad prefixes. Used by analyzeOne to
+ * refuse writing garbage over a good doc; kept pure + exported for testing.
+ */
+export function isReadmeLike(body) {
+  const stripped = (body ?? '')
+    .replace(MARKER, '')
+    .replace(VERSION_RE, '')
+    .replace(INPUTS_HASH_RE, '');
+  const firstNonEmpty = stripped.split('\n').find((l) => l.trim() !== '');
+  return (firstNonEmpty ?? '').trimStart().startsWith('## ');
+}
 
 /**
  * Parse `<!-- docgen:inputs=<hex> -->` out of a string. Returns the hex
@@ -953,6 +977,8 @@ export async function analyzeOne(root, opts = {}) {
     model,
     timeoutMs,
     dryRun = false,
+    maxGenAttempts = DEFAULT_GEN_ATTEMPTS,
+    log = () => {},
   } = opts;
 
   const state = loadState(root);
@@ -1021,15 +1047,37 @@ export async function analyzeOne(root, opts = {}) {
     };
   }
 
-  const body = await runner({
-    prompt: promptText,
-    context,
-    model,
-    timeoutMs,
-  });
-
-  // Strip outer ```markdown fence if Claude wrapped its response.
-  const cleaned = stripWrappingFence(body).trim();
+  // Generate, guarding the trunk-doc failure mode: the model sometimes returns
+  // meta-narration ("README written at …", "no changes needed …") instead of the
+  // doc. Writing that verbatim was the bug. Retry a few times (generation is
+  // stochastic); if EVERY attempt is non-README, refuse to write — keep a prior
+  // good doc rather than clobber it, and leave the dir stale so a later run
+  // retries. The batch livelock guard skips a dir that stays stale this run.
+  let cleaned = null;
+  for (let attempt = 1; attempt <= maxGenAttempts; attempt++) {
+    const body = await runner({ prompt: promptText, context, model, timeoutMs });
+    // Strip outer ```markdown fence if Claude wrapped its response.
+    const candidate = stripWrappingFence(body).trim();
+    if (isReadmeLike(candidate)) {
+      cleaned = candidate;
+      break;
+    }
+    log(
+      `docgen: ${rel} — generation attempt ${attempt}/${maxGenAttempts} produced ` +
+        `meta-narration, not a doc (no '## ' heading); ` +
+        (attempt < maxGenAttempts ? 'retrying' : 'giving up'),
+    );
+  }
+  if (cleaned === null) {
+    return {
+      picked: rel,
+      skipped: 'invalid-generation',
+      keptPrior: priorV != null,
+      message:
+        `model returned meta-narration, not a doc, after ${maxGenAttempts} attempts; ` +
+        (priorV != null ? 'kept the prior doc' : 'no doc written'),
+    };
+  }
 
   // Extract the LLM's declared version, then resolve to the final
   // version we'll write. The LLM's choice may be overridden if the

@@ -79,6 +79,13 @@ section entirely if there's nothing surprising.
 
 Constraints:
 - Output the README content directly. Do NOT wrap it in ``` fences.
+- Output ONLY the document. NEVER narrate what you did or decided. Do not
+  write meta-sentences like "README written at…", "The README has been
+  written to…", "README updated to…", "The file already exists…", "no
+  changes needed", or "Let me…". Your ENTIRE response must BE the document —
+  the version line, then `## Purpose`, then the rest. Even when the existing
+  README shown to you is already accurate, RE-EMIT the document (adjusted as
+  needed); do not describe it or say it is unchanged.
 - Do NOT include a top-level title — the file path is the title.
 - Be specific. "Handles caching" is useless; "in-memory + disk-backed
   TTL cache for upstream API responses, 5-min TTL, serves stale on 429"
