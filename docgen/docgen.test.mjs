@@ -105,6 +105,50 @@ test('walkDirs yields content-bearing dirs and skips node_modules / hidden / dis
 
 // ─── file selection ───────────────────────────────────────────────────────
 
+test('walkDirs skips gitignored directories', () => {
+  // Observed live: a priming run spent 6 of its first 21 calls documenting
+  // Rust incremental-build artifacts under apps/solana/target/debug/. Build
+  // output is already declared uninteresting — by .gitignore — and every
+  // language spells its build dir differently, so honouring .gitignore
+  // generalises where a hand-maintained SKIP_DIRS list cannot.
+  const root = freshRepo();
+  try {
+    // freshRepo() is only a temp dir; the ignore check needs a real repo.
+    execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+    file(root, '.gitignore', 'target/\ngenerated-output/\n');
+    file(root, 'src/index.ts', 'export const x = 1;');
+    file(root, 'target/debug/incremental/blob/part.rs', 'fn main() {}');
+    file(root, 'generated-output/thing.ts', 'export const y = 2;');
+    // No `git add` needed: `ls-files --others --ignored` reports untracked
+    // ignored paths, which is exactly what build output is.
+
+    const walked = [...walkDirs(root)].map((d) => d.slice(root.length + 1));
+    assert.ok(walked.includes('src'), 'source dirs must still be walked');
+    assert.ok(
+      !walked.some((d) => d.startsWith('target')),
+      `gitignored target/ must be skipped, got: ${walked.join(', ')}`,
+    );
+    assert.ok(
+      !walked.some((d) => d.startsWith('generated-output')),
+      'any gitignored dir must be skipped, not just known build names',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('walkDirs still works in a directory that is not a git repo', () => {
+  const root = mkdtempSync(join(tmpdir(), 'docgen-nogit-'));
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 1;');
+    const walked = [...walkDirs(root)].map((d) => d.slice(root.length + 1));
+    assert.ok(walked.includes('src'), 'must not throw or skip everything');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a large SOURCE directory is documented, not silently skipped', () => {
   // MAX_FILES_PER_DIR exists to skip generated-asset dirs. It was also
   // skipping the most important hand-written directories: pbx-platform's
