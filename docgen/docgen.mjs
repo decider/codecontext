@@ -116,6 +116,9 @@ const SKIP_DIRS = new Set([
   '.pytest_cache',
   '.turbo',
   '.parcel-cache',
+  // Cargo/Rust build output. Belt-and-braces: the gitignore walk above is the
+  // real guard, but this holds in a non-git checkout too.
+  'target',
 ]);
 
 /** File extension skips (binary / lock / huge). The actual size cap below
@@ -277,7 +280,39 @@ export function saveStateMerging(root, additions, lastRun) {
  *
  * Skips SKIP_DIRS at any depth and hidden directories.
  */
+/**
+ * Directories git is already ignoring, as absolute paths.
+ *
+ * Build output is the single biggest source of wasted generation, and every
+ * ecosystem names its build dir differently — `target/`, `.next/`, `out/`,
+ * `_build/`. `.gitignore` is the declaration that already exists, so honouring
+ * it generalises where a hand-maintained SKIP_DIRS list cannot: a real priming
+ * run spent 6 of its first 21 calls documenting Rust incremental-build blobs
+ * under `target/debug/incremental/`.
+ *
+ * One `git` call for the whole walk. Returns an empty set outside a repo, or
+ * if git is unavailable, so behaviour degrades to the old SKIP_DIRS list.
+ */
+export function ignoredDirs(root) {
+  try {
+    const out = execFileSync(
+      'git',
+      ['ls-files', '--others', '--ignored', '--directory', '--exclude-standard'],
+      { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const set = new Set();
+    for (const line of out.split('\n')) {
+      const rel = line.trim().replace(/\/$/, '');
+      if (rel) set.add(resolve(root, rel));
+    }
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
 export function* walkDirs(root) {
+  const ignored = ignoredDirs(root);
   const stack = [root];
   while (stack.length > 0) {
     const dir = stack.pop();
@@ -296,7 +331,9 @@ export function* walkDirs(root) {
       if (e.name.startsWith('.') && e.name !== '.github') continue;
       if (SKIP_DIRS.has(e.name)) continue;
       if (e.isDirectory()) {
-        subdirs.push(join(dir, e.name));
+        const full = join(dir, e.name);
+        if (ignored.has(full)) continue; // git already says this is not source
+        subdirs.push(full);
         hasUsableSubdirs = true;
       } else if (e.isFile()) hasFiles = true;
     }
