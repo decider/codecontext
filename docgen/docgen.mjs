@@ -73,6 +73,9 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  openSync,
+  readSync,
+  closeSync,
   writeFileSync,
 } from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
@@ -310,6 +313,36 @@ function fileContentHash(path) {
  *  deterministic prompts. Each entry carries a content hash used by
  *  needsAnalysis for staleness — content hash survives fresh clones,
  *  unlike mtime which gets rewritten on checkout. */
+/** How far into a file we look for a generated-marker. */
+export const GENERATED_MARKER_WINDOW = 2048;
+
+/**
+ * True when a file announces itself as machine-generated.
+ *
+ * `@generated` is the de-facto convention (Meta, Bazel, protoc, and our own
+ * autodocs mirrors all emit it). Only the head of the file counts, so a
+ * document merely *discussing* the convention does not exclude itself.
+ */
+export function isGeneratedFile(full) {
+  let fd;
+  try {
+    fd = openSync(full, 'r');
+    const buf = Buffer.alloc(GENERATED_MARKER_WINDOW);
+    const n = readSync(fd, buf, 0, GENERATED_MARKER_WINDOW, 0);
+    return buf.subarray(0, n).toString('utf8').includes('@generated');
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+}
+
 export function selectFiles(dir) {
   const out = [];
   let entries;
@@ -335,6 +368,12 @@ export function selectFiles(dir) {
       continue;
     }
     if (st.size > MAX_FILE_BYTES_HARD) continue;
+    // Generated files are OUTPUT, not source. Reading one back in makes it part
+    // of this directory's inputs hash, so the directory can never settle:
+    // regenerate -> the generated file is rewritten -> the hash changes ->
+    // regenerate, forever. Ownership is decided by the marker, not the
+    // filename, so a hand-written CLAUDE.md stays a legitimate input.
+    if (isGeneratedFile(full)) continue;
     const hash = fileContentHash(full);
     if (!hash) continue; // unreadable; skip
     out.push({ name: e.name, full, hash, size: st.size });
