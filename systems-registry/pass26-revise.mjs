@@ -11,7 +11,7 @@ import { spawn } from 'node:child_process';
 
 import { gatherInputsFor, buildPromptFor } from './pass2.mjs';
 import { vetSystem } from './pass25-vet.mjs';
-import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from './models.mjs';
+import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from '../models.mjs';
 
 const MAX_RETRIES = 2;  // 3 total tries: initial body + 2 revisions
 

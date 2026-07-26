@@ -26,7 +26,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { withRetry } from './llm-retry.mjs';
 import { validateAndRepairBody } from './validate-mermaid.mjs';
-import { GENERATE_MODEL, DEFAULT_TIMEOUT_MS } from './models.mjs';
+import { GENERATE_MODEL, DEFAULT_TIMEOUT_MS } from '../models.mjs';
 
 // Per-anchor truncation cap. Raised from 4KB → 10KB so a full handler
 // body and its closest helpers fit in the slice the LLM sees.

@@ -34,6 +34,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname, relative } from 'node:path';
 import { spawn } from 'node:child_process';
+import { JUDGE_MODEL } from '../models.mjs';
 
 /** The docgen-owned doc filename (must match docgen.mjs DOC_FILENAME). */
 const DOC_FILENAME = 'AUTO_DOCS.md';
@@ -191,7 +192,7 @@ export function parseReadmeValidation(text) {
 }
 
 /** Resolve judge command: DOCGEN_JUDGE_CMD env, else claude -p. */
-export function judgeCommand(model = 'claude-opus-4-7') {
+export function judgeCommand(model = JUDGE_MODEL) {
   const override = (process.env.DOCGEN_JUDGE_CMD || '').trim();
   if (override) { const a = override.split(/\s+/); return { cmd: a[0], args: a.slice(1), source: 'DOCGEN_JUDGE_CMD' }; }
   return { cmd: 'claude', args: ['-p', '--model', model, '--output-format', 'text'], source: 'default' };

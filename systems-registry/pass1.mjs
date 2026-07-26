@@ -34,7 +34,7 @@ import { execFileSync, spawn } from 'node:child_process';
 
 import { detect } from './detect.mjs';
 import { withRetry } from './llm-retry.mjs';
-import { GENERATE_MODEL, DEFAULT_TIMEOUT_MS } from './models.mjs';
+import { GENERATE_MODEL, DEFAULT_TIMEOUT_MS } from '../models.mjs';
 
 const PRIOR_HYPOTHESIS_PATH = 'docs/systems/_hypothesis.md';
 // Per-repo context injection — a hand-written, in-repo file the consumer

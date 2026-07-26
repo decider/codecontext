@@ -8,7 +8,7 @@
  *
  * When ready:
  *  1. Set `ANTHROPIC_API_KEY` in env (or use `claude -p` for generator)
- *  2. Set `JUDGE_MODEL=claude-haiku-4-5` (cheaper than generator)
+ *  2. Set `JUDGE_MODEL` (cheaper than generator; see ../../models.mjs)
  *  3. Run: `node judge-runner.mjs --fixture tiny-clean --pass 1`
  *  4. Output: `evals/runs/<timestamp>/<fixture>-pass<N>.json` with
  *     score, rationale, missing/extra/wrongAnchors arrays
@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process';
 
 import { runPass1 } from '../pass1.mjs';
 import { generateBody } from '../pass2.mjs';
+import { GENERATE_MODEL, CHEAP_MODEL } from '../../models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -37,8 +38,8 @@ USAGE
   node judge-runner.mjs --all-fixtures --pass <0|1|2|2.5>
 
 Options:
-  --judge-model <name>     default: claude-haiku-4-5 (cheap judge)
-  --generator-model <name> default: claude-opus-4-7 (the pass under test)
+  --judge-model <name>     default: CHEAP_MODEL, see ../../models.mjs
+  --generator-model <name> default: GENERATE_MODEL, see ../../models.mjs
   --dry-run                print prompts that WOULD be sent, no API calls
 
 Outputs to evals/runs/<ISO-timestamp>/<fixture>-pass<N>.json.
@@ -119,7 +120,7 @@ export function buildJudgePromptPayload({ passId, fixture, actualOutput }) {
  * Spawn `claude -p` with a model + prompt, return stdout. Same shape as
  * docgen + pass1's runner contract.
  */
-function callClaude(prompt, { model = 'claude-haiku-4-5', timeoutMs = 5 * 60_000 } = {}) {
+function callClaude(prompt, { model = CHEAP_MODEL, timeoutMs = 5 * 60_000 } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['-p', '--model', model, '--output-format', 'text'];
     const child = spawn('claude', args);
@@ -183,7 +184,7 @@ async function callJudge({ payload, judgeModel, dryRun }) {
   if (process.env.ENABLE_LLM_EVALS !== '1') {
     return { score: null, rationale: 'LLM evals disabled — set ENABLE_LLM_EVALS=1 to enable' };
   }
-  const response = await callClaude(payload, { model: judgeModel || 'claude-haiku-4-5' });
+  const response = await callClaude(payload, { model: judgeModel || CHEAP_MODEL });
   return parseJudgeResponse(response);
 }
 
@@ -204,7 +205,7 @@ const FIXTURE_PASS2_TARGETS = {
   },
 };
 
-export async function generateForFixture(passId, fixtureDir, { generatorModel = 'claude-opus-4-7' } = {}) {
+export async function generateForFixture(passId, fixtureDir, { generatorModel = GENERATE_MODEL } = {}) {
   if (passId === '1') {
     const result = await runPass1(fixtureDir, {
       runner: async (prompt) => callClaude(prompt, { model: generatorModel }),
@@ -257,8 +258,8 @@ async function main() {
     const telemetry = {
       fixture: f,
       passId: args.pass,
-      generatorModel: args.generatorModel || 'claude-opus-4-7',
-      judgeModel: args.judgeModel || 'claude-haiku-4-5',
+      generatorModel: args.generatorModel || GENERATE_MODEL,
+      judgeModel: args.judgeModel || CHEAP_MODEL,
       startedAt: new Date().toISOString(),
       dryRun: !!args.dryRun,
       llmEvalsEnabled: process.env.ENABLE_LLM_EVALS === '1',

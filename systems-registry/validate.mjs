@@ -43,7 +43,7 @@ import { withRetry } from './llm-retry.mjs';
 
 import { gatherInputsFor } from './pass2.mjs';
 import { repoMeta } from './repo-meta.mjs';
-import { JUDGE_MODEL } from './models.mjs';
+import { JUDGE_MODEL } from '../models.mjs';
 
 // Dimension weights → overall. Correctness dominates (a wrong diagram is
 // worse than a pretty one); sizing matters because right-sizing is the

@@ -17,7 +17,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { parseFrontMatter, globToRegex } from './registry.mjs';
-import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from './models.mjs';
+import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from '../models.mjs';
 
 const REQUIRED_SECTIONS = [
   'What it does', 'The loop', 'Anchors',

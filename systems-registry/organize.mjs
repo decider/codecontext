@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { parseFrontMatter } from './registry.mjs';
-import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from './models.mjs';
+import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from '../models.mjs';
 
 const CATEGORIES_PATH = 'docs/systems/_categories.json';
 

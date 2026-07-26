@@ -28,7 +28,7 @@ import { resolve } from 'node:path';
 import { generateBody } from './pass2.mjs';
 import { validateSystem } from './validate.mjs';
 import { cheapVet } from './pass25-vet.mjs';
-import { GENERATE_MODEL, JUDGE_MODEL } from './models.mjs';
+import { GENERATE_MODEL, JUDGE_MODEL } from '../models.mjs';
 
 // Structural problem kinds that make a regeneration WORSE than its
 // predecessor. A regen that introduces any of these (relative to the
