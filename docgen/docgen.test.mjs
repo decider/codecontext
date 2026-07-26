@@ -105,6 +105,76 @@ test('walkDirs yields content-bearing dirs and skips node_modules / hidden / dis
 
 // ─── file selection ───────────────────────────────────────────────────────
 
+test('a large SOURCE directory is documented, not silently skipped', () => {
+  // MAX_FILES_PER_DIR exists to skip generated-asset dirs. It was also
+  // skipping the most important hand-written directories: pbx-platform's
+  // apps/control-plane/src has 236 modules and 146 commits/30d — the
+  // most-churned directory in that repo — and could never be regenerated at
+  // any price. A silent `return null` reads as "documented and healthy".
+  const root = freshRepo();
+  try {
+    for (let i = 0; i < 120; i++) {
+      file(root, `big/mod${i}.ts`, `export const v${i} = ${i};\n`);
+    }
+    const reason = needsAnalysis(root, join(root, 'big'), loadState(root));
+    assert.ok(reason, 'a 120-file source dir must be analyzable');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a generated-asset directory is still skipped', () => {
+  // The cap's original purpose has to survive: a pile of data files has no
+  // symbols to map and would just bloat the prompt.
+  const root = freshRepo();
+  try {
+    for (let i = 0; i < 120; i++) {
+      file(root, `assets/frame${i}.json`, JSON.stringify({ n: i }));
+    }
+    const reason = needsAnalysis(root, join(root, 'assets'), loadState(root));
+    assert.equal(reason, null, 'a data-only dir must still be skipped');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('assembleContext names every file even when bodies do not fit', () => {
+  // The doc\'s ## Map must be able to reference a file it could not read in
+  // full — a partial map is useful, an absent one is not.
+  const root = freshRepo();
+  try {
+    // Each body is capped at MAX_FILE_BYTES_FOR_PROMPT (8KB) before it counts
+    // against the budget, so exceeding 400KB takes ~50+ files, not a few big
+    // ones.
+    for (let i = 0; i < 90; i++) {
+      file(root, `big/mod${i}.ts`, `// ${'x'.repeat(30 * 1024)}\nexport const v${i} = ${i};\n`);
+    }
+    const dir = join(root, 'big');
+    const ctx = assembleContext(root, dir, selectFiles(dir), {});
+    for (const name of ['mod0.ts', 'mod20.ts', 'mod89.ts']) {
+      assert.ok(ctx.includes(name), `${name} must appear in the context`);
+    }
+    assert.match(ctx, /listed by name only|not shown/i, 'truncation must be stated');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('assembleContext keeps a bounded prompt for a huge directory', () => {
+  const root = freshRepo();
+  try {
+    for (let i = 0; i < 60; i++) {
+      file(root, `big/mod${i}.ts`, 'y'.repeat(60 * 1024));
+    }
+    const dir = join(root, 'big');
+    const ctx = assembleContext(root, dir, selectFiles(dir), {});
+    // 60 x 60KB = 3.6MB of source; the prompt must not carry all of it.
+    assert.ok(ctx.length < 1.5 * 1024 * 1024, `context was ${ctx.length} bytes`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('selectFiles skips files carrying an @generated marker', () => {
   // A generated file is OUTPUT, not source. Feeding it back in makes it part
   // of the directory's inputs hash, so the directory can never settle: it is
