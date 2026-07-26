@@ -29,7 +29,7 @@
  *
  *     SYSREG_JUDGE_CMD="codex exec"          node cli.mjs validate --target foo
  *     SYSREG_JUDGE_CMD="gemini -p"           node cli.mjs validate --target foo
- *     # default (no env): claude -p --model claude-sonnet-4-6 (judging is a
+ *     # default (no env): claude -p --model $JUDGE_MODEL, see models.mjs (judging is a
  *     # discrimination task — Sonnet does it well at ~3x less than Opus)
  *
  * Tests inject a `runner` fn directly so nothing spawns.
@@ -43,6 +43,7 @@ import { withRetry } from './llm-retry.mjs';
 
 import { gatherInputsFor } from './pass2.mjs';
 import { repoMeta } from './repo-meta.mjs';
+import { JUDGE_MODEL } from './models.mjs';
 
 // Dimension weights → overall. Correctness dominates (a wrong diagram is
 // worse than a pretty one); sizing matters because right-sizing is the
@@ -285,7 +286,7 @@ export function parseValidation(text) {
  * a base command + flags, e.g. "codex exec" or "gemini -p"); otherwise
  * `claude -p --model <model> --output-format text`.
  */
-export function judgeCommand(model = 'claude-sonnet-4-6') {
+export function judgeCommand(model = JUDGE_MODEL) {
   const override = (process.env.SYSREG_JUDGE_CMD || '').trim();
   if (override) {
     const parts = override.split(/\s+/);

@@ -28,6 +28,7 @@ import { resolve } from 'node:path';
 import { generateBody } from './pass2.mjs';
 import { validateSystem } from './validate.mjs';
 import { cheapVet } from './pass25-vet.mjs';
+import { GENERATE_MODEL, JUDGE_MODEL } from './models.mjs';
 
 // Structural problem kinds that make a regeneration WORSE than its
 // predecessor. A regen that introduces any of these (relative to the
@@ -57,8 +58,8 @@ export async function refineSystem(repoRoot, hypothesisEntry, {
   // keep-best guard discards any Sonnet rewrite that scores below the Opus
   // draft — so we never ship a worse doc. The judge is a discrimination
   // task Sonnet does well. Pass `--model`/env to override.
-  genModel = 'claude-sonnet-4-6',
-  judgeModel = 'claude-sonnet-4-6',
+  genModel = GENERATE_MODEL,
+  judgeModel = JUDGE_MODEL,
   // generateFirst=true: standalone use — produce a fresh body on round 1
   // then judge it. generateFirst=false: the sweep already generated +
   // vetted + revised a manifest, so VALIDATE that existing doc first and

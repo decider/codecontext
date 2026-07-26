@@ -23,10 +23,11 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { parseFrontMatter } from './registry.mjs';
+import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from './models.mjs';
 
 const CATEGORIES_PATH = 'docs/systems/_categories.json';
 
-function callClaude(prompt, { model = 'claude-haiku-4-5-20251001', timeoutMs = 12 * 60_000 } = {}) {
+function callClaude(prompt, { model = CHEAP_MODEL, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const ch = spawn('claude', ['-p', '--model', model, '--output-format', 'text']);
     const chunks = []; const errs = [];
@@ -154,7 +155,7 @@ export async function runOrganize(repoRoot, { runner, model, write = true } = {}
     writeFileSync(outPath, JSON.stringify({
       ...reconciled,
       generatedAt: new Date().toISOString(),
-      generator: model || 'claude-opus-4-7',
+      generator: model || CHEAP_MODEL,
     }, null, 2));
   }
   return { ...reconciled, outPath, prompt, response, inputs };

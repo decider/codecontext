@@ -147,8 +147,13 @@ describe('judgeCommand', () => {
     assert.equal(c.cmd, 'claude');
     assert.ok(c.args.includes('-p'));
     assert.equal(c.source, 'default');
-    // Guard: the judge must default to Sonnet, not Opus.
-    assert.ok(c.args.includes('claude-sonnet-4-6'), `expected sonnet default, got ${c.args.join(' ')}`);
+    // Guard: the judge must default to Sonnet, not Opus. Matched by FAMILY,
+    // not exact version — pinning `claude-sonnet-4-6` here turned a routine
+    // model bump into a test failure, and it is the same drift that left
+    // `claude-opus-4-7` live in the pipeline two generations late.
+    const model = c.args[c.args.indexOf('--model') + 1] || '';
+    assert.match(model, /sonnet/, `expected a sonnet default, got ${c.args.join(' ')}`);
+    assert.doesNotMatch(model, /opus/, 'the judge must not default to Opus');
   });
 
   it('honors SYSREG_JUDGE_CMD for codex / gemini', () => {

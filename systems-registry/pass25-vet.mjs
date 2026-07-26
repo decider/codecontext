@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { parseFrontMatter, globToRegex } from './registry.mjs';
+import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from './models.mjs';
 
 const REQUIRED_SECTIONS = [
   'What it does', 'The loop', 'Anchors',
@@ -330,7 +331,7 @@ export function cheapVet(repoRoot, manifestPath) {
   return { problems, frontMatter, body };
 }
 
-function callClaude(prompt, { model = 'claude-haiku-4-5-20251001', timeoutMs = 12 * 60_000 } = {}) {
+function callClaude(prompt, { model = CHEAP_MODEL, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['-p', '--model', model, '--output-format', 'text'];
     const ch = spawn('claude', args);
