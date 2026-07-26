@@ -134,10 +134,19 @@ const SKIP_FILE_EXT = new Set([
 const MAX_FILE_BYTES_FOR_PROMPT = 8 * 1024;
 /** Skip individual files larger than this even after truncation. */
 const MAX_FILE_BYTES_HARD = 1024 * 1024;
-/** Skip a directory entirely if it has more than this many files —
- *  generated-asset dirs (build outputs, large fixture sets) bloat the
- *  prompt without informational value. */
-const MAX_FILES_PER_DIR = 60;
+/** Skip a directory entirely only past this many files — a pathological case
+ *  (thousands of generated siblings), not merely a big source directory.
+ *  Ordinary generated-asset dirs are pruned by the data-only check in
+ *  needsAnalysis; SIZE is bounded by MAX_CONTEXT_BYTES below, not by refusing
+ *  to document the directory at all. */
+export const MAX_FILES_HARD_SKIP = 400;
+
+/** Byte budget for file BODIES in one prompt. Past this, remaining files are
+ *  listed by NAME ONLY so the generated `## Map` can still point at them.
+ *  ~400KB of bodies measured at roughly $1.00 per call on Sonnet — the ceiling
+ *  is a cost decision, so it is stated in bytes rather than hidden in a file
+ *  count. */
+export const MAX_CONTEXT_BYTES = 400 * 1024;
 
 /** Non-code file extensions. A directory whose EVERY file has one of these
  *  (and has no documented children) has no code symbols to map, so
@@ -677,7 +686,17 @@ export function needsAnalysis(root, dir, state) {
   const childReadmes = findChildReadmesInState(root, dir, state);
   // Nothing to document — no own files, no documented children.
   if (files.length === 0 && childReadmes.length === 0) return null;
-  if (files.length > MAX_FILES_PER_DIR) return null; // generated/asset dir
+  // Pathological dirs only. This used to be `> MAX_FILES_PER_DIR` (60), which
+  // silently skipped the most important directories in a real repo:
+  // pbx-platform's apps/control-plane/src has 236 hand-written modules and is
+  // the most-churned directory in that codebase, and it could never be
+  // regenerated at any price — while still reporting as documented.
+  //
+  // Generated-asset dirs are caught by the data-only check just below, which
+  // is what actually prunes them. Size is handled where it belongs, in
+  // assembleContext's byte budget, so a large SOURCE dir gets a doc that names
+  // every file even when it cannot include every body.
+  if (files.length > MAX_FILES_HARD_SKIP) return null;
   // No-code skip: a dir whose every file is data OR prose/markup (no code
   // symbols to point an agent at) is skipped — UNLESS it has documented
   // children, in which case it acts as a trunk and still gets a README.
@@ -975,7 +994,15 @@ export function assembleContext(root, dir, files, opts = {}) {
 
   lines.push(`## Files directly in this directory (${files.length})`);
   lines.push('');
-  for (const f of files) {
+
+  // Spend the byte budget on bodies, smallest first: for a given budget that
+  // maximises how many files the model actually reads, and the big files that
+  // miss out are the ones most likely to be generated or vendored anyway.
+  const budgetOrder = [...files].sort((a, b) => (a.size || 0) - (b.size || 0));
+  const included = new Set();
+  let spent = 0;
+  for (const f of budgetOrder) {
+    if (spent >= MAX_CONTEXT_BYTES) break;
     let body;
     try {
       body = readFileSync(f.full, 'utf8');
@@ -987,11 +1014,32 @@ export function assembleContext(root, dir, files, opts = {}) {
       body = body.slice(0, MAX_FILE_BYTES_FOR_PROMPT);
       truncated = true;
     }
+    spent += body.length;
+    included.add(f.name);
     const ext = extname(f.name).slice(1) || '';
     lines.push(`### ${f.name}${truncated ? ' (truncated)' : ''}`);
     lines.push('```' + ext);
     lines.push(body.trimEnd());
     lines.push('```');
+    lines.push('');
+  }
+
+  // Everything the budget could not fit still gets NAMED, so the generated
+  // `## Map` can point an agent at it. A map missing a file is a map that
+  // quietly lies about what lives here.
+  const omitted = files.filter((f) => !included.has(f.name));
+  if (omitted.length > 0) {
+    lines.push(
+      `### Remaining ${omitted.length} file(s) — listed by name only (prompt budget reached)`,
+    );
+    lines.push('');
+    lines.push(
+      'Their contents are NOT shown. Still reference them in the Map by name ' +
+        'where the name makes their responsibility clear; do not invent detail ' +
+        'about what is inside them.',
+    );
+    lines.push('');
+    for (const f of omitted) lines.push(`- \`${f.name}\` (${f.size} bytes)`);
     lines.push('');
   }
   return lines.join('\n');
