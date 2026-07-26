@@ -11,10 +11,11 @@ import { spawn } from 'node:child_process';
 
 import { gatherInputsFor, buildPromptFor } from './pass2.mjs';
 import { vetSystem } from './pass25-vet.mjs';
+import { CHEAP_MODEL, DEFAULT_TIMEOUT_MS } from '../models.mjs';
 
 const MAX_RETRIES = 2;  // 3 total tries: initial body + 2 revisions
 
-function callClaude(prompt, { model = 'claude-haiku-4-5-20251001', timeoutMs = 12 * 60_000 } = {}) {
+function callClaude(prompt, { model = CHEAP_MODEL, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const ch = spawn('claude', ['-p', '--model', model, '--output-format', 'text']);
     const chunks = []; const errs = [];

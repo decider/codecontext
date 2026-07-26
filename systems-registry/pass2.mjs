@@ -26,6 +26,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { withRetry } from './llm-retry.mjs';
 import { validateAndRepairBody } from './validate-mermaid.mjs';
+import { GENERATE_MODEL, DEFAULT_TIMEOUT_MS } from '../models.mjs';
 
 // Per-anchor truncation cap. Raised from 4KB → 10KB so a full handler
 // body and its closest helpers fit in the slice the LLM sees.
@@ -606,7 +607,7 @@ export function buildPromptFor(inputs) {
   return parts.join('\n');
 }
 
-function callClaude(prompt, { model = 'claude-opus-4-7', timeoutMs = 12 * 60_000 } = {}) {
+function callClaude(prompt, { model = GENERATE_MODEL, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return withRetry(() => new Promise((resolve, reject) => {
     const args = ['-p', '--model', model, '--output-format', 'text'];
     const child = spawn('claude', args);

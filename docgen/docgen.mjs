@@ -53,7 +53,7 @@
  *                                file paths — used by the pre-push hook
  *                                to pass the push diff's changed dirs.
  *                                Absent = full sweep (default).
- *   --model <name>               override claude model (default: claude-sonnet-4-6)
+ *   --model <name>               override claude model (default: DOCGEN_MODEL, see models.mjs)
  *   --timeout-ms <n>             per-call timeout (default 300000 = 5 min)
  *
  * The CLI is designed for one-shot invocation by humans, cron, or a
@@ -82,6 +82,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DOCGEN_MODEL } from '../models.mjs';
 
 // ─── config ───────────────────────────────────────────────────────────────
 
@@ -191,7 +192,7 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 // well at ~3-5x less than Opus, so it's the default. Override with
 // `--model <name>`. (systems-registry keeps the cross-system manifest
 // generation on Opus — that's the higher-judgment, lower-volume work.)
-export const DEFAULT_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL = DOCGEN_MODEL;
 
 // How many times to (re)generate a directory's doc before giving up. The model
 // occasionally returns meta-narration instead of the doc (the trunk-doc bug);

@@ -56,7 +56,32 @@ export function parseFrontMatter(text) {
   let currentList = null;
   let currentMap = null;
 
-  for (const raw of body) {
+  // YAML block scalars, handled before the line loop so their continuation
+  // lines are not mistaken for list items or map entries.
+  //
+  // Half of pbx-platform's system manifests (15 of 30) write `summary: >-`
+  // and continue on indented lines. Without this the value parsed as the
+  // literal ">-", and every consumer — the inject hook and the PR comment —
+  // displayed ">-" where the system's one-line description belongs.
+  const consumed = new Set();
+  for (let i = 0; i < body.length; i++) {
+    const bm = body[i].match(/^([a-zA-Z_][\w-]*):\s*([>|])[-+]?\s*$/);
+    if (!bm) continue;
+    const [, key, style] = bm;
+    const parts = [];
+    for (let j = i + 1; j < body.length; j++) {
+      if (body[j].trim() && !/^\s/.test(body[j])) break; // dedent ends the block
+      consumed.add(j);
+      parts.push(body[j].trim());
+    }
+    // `>` folds newlines into spaces; `|` keeps them.
+    fm[key] = (style === '>' ? parts.filter(Boolean).join(' ') : parts.join('\n')).trim();
+    consumed.add(i);
+  }
+
+  for (let bi = 0; bi < body.length; bi++) {
+    if (consumed.has(bi)) continue;
+    const raw = body[bi];
     if (!raw.trim()) continue;
     if (raw.match(/^\s+- /)) {
       // list item

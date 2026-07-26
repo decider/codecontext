@@ -26,7 +26,7 @@ import { detect } from './detect.mjs';
 import { parseFrontMatter, globToRegex } from './registry.mjs';
 import { runPass1 } from './pass1.mjs';
 import { generateBody } from './pass2.mjs';
-import { vetSystem, checkSubflowRegression } from './pass25-vet.mjs';
+import { vetSystem, checkSubflowRegression, findSubflows } from './pass25-vet.mjs';
 import { reviseSystem } from './pass26-revise.mjs';
 import { runOrganize } from './organize.mjs';
 import { buildSite } from './build-static.mjs';
@@ -94,13 +94,18 @@ export function computeImpact(repoRoot, changedFiles) {
  * these mermaid subflows and the fresh regen dropped them; tell the model to
  * retain every one (additive — never drop).
  */
-function keepSubflowFeedback(dropped) {
+function keepSubflowFeedback(dropped, { preemptive = false } = {}) {
   return {
     verdict: 'subflow-regression',
     issues: [
-      'Your previous draft DROPPED mermaid subflow diagrams that the prior, ' +
-        'already-shipped version of this doc had. Dropping a prior subflow is a ' +
-        'regression and will be rejected.',
+      preemptive
+        ? // First pass: there is no previous draft to have dropped anything,
+          // so saying so would be a false statement in the prompt.
+          'The already-shipped version of this doc carries mermaid subflow ' +
+          'diagrams. Dropping any of them is a regression and will be rejected.'
+        : 'Your previous draft DROPPED mermaid subflow diagrams that the prior, ' +
+          'already-shipped version of this doc had. Dropping a prior subflow is a ' +
+          'regression and will be rejected.',
     ],
     missing: dropped.map(
       (n) =>
@@ -140,7 +145,24 @@ async function genVetRevise(repoRoot, entry, { runner }) {
   const manifestPath = resolve(repoRoot, 'docs/systems', `${entry.name}.md`);
   const originalBody = existsSync(manifestPath) ? readFileSync(manifestPath, 'utf8') : '';
 
-  let r = await genVetReviseOnce(repoRoot, entry, { runner });
+  // Pre-empt the regression instead of paying to detect and redo it.
+  //
+  // The retry below is a FULL second generation — measured at $0.19-$0.76 per
+  // system on Sonnet 5, so one regression doubles that system's bill. The
+  // must-keep list is knowable BEFORE the first call: it is just the subflows
+  // the prior manifest already ships. Sending it up front means the common
+  // case costs one generation instead of two, and the retry becomes a rare
+  // backstop rather than a routine second pass.
+  const priorSubflows = findSubflows(originalBody)
+    .filter((s) => s.hasMermaid)
+    .map((s) => s.name);
+
+  let r = await genVetReviseOnce(repoRoot, entry, {
+    runner,
+    feedback: priorSubflows.length
+      ? keepSubflowFeedback(priorSubflows, { preemptive: true })
+      : null,
+  });
   let attempts = r.attempts;
   let regression = checkSubflowRegression(originalBody, r.body);
 

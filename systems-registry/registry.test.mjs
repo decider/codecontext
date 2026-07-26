@@ -280,3 +280,42 @@ describe('renderInjection', () => {
     assert.ok(out.includes('truncated'));
   });
 });
+
+// ─── YAML folded / block scalars ──────────────────────────────────────────
+
+describe('parseFrontMatter block scalars', () => {
+  it('parseFrontMatter folds a `>-` multi-line scalar into one line', () => {
+  // Half the manifests in pbx-platform (15 of 30) write their summary as a
+  // folded scalar. Without this the value parsed as the literal ">-", so the
+  // inject hook and the PR comment both surfaced ">-" where the one-line
+  // description of the system should be.
+  const { frontMatter } = parseFrontMatter(
+    ['---', 'name: x', 'summary: >-', '  Auto-detects coordinated', '  multi-file systems.', 'status: active', '---', '', 'body'].join('\n'),
+  );
+  assert.equal(frontMatter.summary, 'Auto-detects coordinated multi-file systems.');
+  assert.equal(frontMatter.name, 'x');
+  assert.equal(frontMatter.status, 'active', 'keys after the folded block still parse');
+  });
+
+  it('parseFrontMatter handles `>` and `|` block scalars', () => {
+  const folded = parseFrontMatter(['---', 'summary: >', '  a', '  b', '---', ''].join('\n'));
+  assert.equal(folded.frontMatter.summary, 'a b');
+  // `|` is literal: newlines are preserved.
+  const literal = parseFrontMatter(['---', 'summary: |', '  a', '  b', '---', ''].join('\n'));
+  assert.equal(literal.frontMatter.summary, 'a\nb');
+  });
+
+  it('parseFrontMatter still handles a plain one-line summary', () => {
+  const { frontMatter } = parseFrontMatter(['---', 'summary: just one line', '---', ''].join('\n'));
+  assert.equal(frontMatter.summary, 'just one line');
+  });
+
+  it('a folded scalar does not swallow a following list', () => {
+  const { frontMatter } = parseFrontMatter(
+    ['---', 'summary: >-', '  folded text', 'globs:', '  - a/**', '  - b/**', '---', ''].join('\n'),
+  );
+  assert.equal(frontMatter.summary, 'folded text');
+  assert.deepEqual(frontMatter.globs, ['a/**', 'b/**']);
+  });
+
+});
