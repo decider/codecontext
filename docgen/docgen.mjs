@@ -778,6 +778,18 @@ export function needsAnalysis(root, dir, state) {
 
   if (!entry) return 'never-analyzed';
 
+  // A state entry with NO doc on disk is stale, not fresh.
+  //
+  // The existsSync above is only a fast-path SKIP. Without this, a dir whose
+  // files have not changed since its entry was written reported fresh whether
+  // or not the doc actually existed — so a deleted doc never came back, and a
+  // dir left over from the README.md -> AUTO_DOCS.md rename stayed invisible
+  // permanently. Measured on pbx-platform: 173 of 335 entries had no doc, ALL
+  // of them reported fresh, and computeStatus said `uncovered=0` while 52% of
+  // the tree was undocumented. `--until-done` only visits what needsAnalysis
+  // flags, so no runner — local or CI — could ever reach them.
+  if (!existsSync(docPath)) return 'doc-missing';
+
   // Own-file checks.
   const prev = entry.files || {};
   const curNames = files.map((f) => f.name).sort();
