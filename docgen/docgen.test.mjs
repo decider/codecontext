@@ -1668,3 +1668,41 @@ test('a dir with a matching doc and unchanged files is still fresh', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('analyzeAllParallel stops at maxDirs and reports how many remain', async () => {
+  // Without this there is no way to process a SUBSET. The ceiling in the CI
+  // wrapper is a refusal threshold, not a batch size: 159 stale against a cap
+  // of 80 refuses entirely rather than doing 80. So a backlog larger than one
+  // job timeout could never drain — the nightly just failed, red, for six
+  // days running. maxDirs makes batch size and refusal two separate things.
+  const root = freshRepo();
+  try {
+    for (let i = 0; i < 9; i++) file(root, `p${i}/a.ts`, `export const v = ${i};`);
+    let calls = 0;
+    const runner = async () => {
+      calls++;
+      return '<!-- docgen:version=0.1.0 reason: t -->\n## Purpose\nx\n';
+    };
+    const r = await analyzeAllParallel(root, { runner, maxDirs: 4, parallel: 1 });
+    assert.equal(r.done, 4, 'must stop after maxDirs');
+    assert.equal(calls, 4, 'and must not call the model more than that');
+    assert.ok(r.remaining > 0, 'must report that work is left');
+    assert.equal(r.capped, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('analyzeAllParallel without maxDirs drains everything', async () => {
+  const root = freshRepo();
+  try {
+    for (let i = 0; i < 4; i++) file(root, `p${i}/a.ts`, `export const v = ${i};`);
+    const runner = async () => '<!-- docgen:version=0.1.0 reason: t -->\n## Purpose\nx\n';
+    const r = await analyzeAllParallel(root, { runner, parallel: 1 });
+    assert.ok(r.done >= 4, `expected all dirs, got ${r.done}`);
+    assert.ok(!r.capped, 'not capped when no limit is set');
+    assert.equal(r.remaining ?? 0, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
