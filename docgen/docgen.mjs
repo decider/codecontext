@@ -1343,6 +1343,17 @@ export async function analyzeAllParallel(root, opts = {}) {
     onBatchStart,
     scope,                // Set<string> of absolute dir paths, or null
     changed,              // string[] of relative dir paths (--changed flag); builds scope
+    // Stop after this many directories and report what is left.
+    //
+    // A BATCH SIZE, deliberately distinct from any refusal threshold a caller
+    // applies on top. Without it there is no way to process a SUBSET: a
+    // wrapper that refuses when stale > N can only ever do "all" or "nothing",
+    // so a backlog larger than one job timeout can never drain — observed as a
+    // nightly job failing red for six consecutive days on 159 stale dirs.
+    //
+    // Ordering is untouched: the deepest-first walk still runs and we simply
+    // stop early, so a parent is never written before its children.
+    maxDirs = Infinity,
     ...analyzeOpts
   } = opts;
 
@@ -1387,7 +1398,16 @@ export async function analyzeAllParallel(root, opts = {}) {
   // Outer loop: each iteration handles ONE depth level. We re-walk the
   // tree each time so freshly-written child READMEs become visible to
   // trunk-staleness checks for the next iteration.
+  // Set once the batch size is reached, so the caller can tell "nothing left"
+  // apart from "stopped early" — reporting a capped run as complete is exactly
+  // the silent-truncation this is meant to avoid.
+  let capped = false;
+
   for (;;) {
+    if (done >= maxDirs) {
+      capped = true;
+      break;
+    }
     const state = loadState(root);
     const actionable = [];
     for (const dir of walkDirs(root)) {
@@ -1430,7 +1450,10 @@ export async function analyzeAllParallel(root, opts = {}) {
     // concurrent results. The 'halt' detection below is the escape
     // hatch for truly-fatal errors (cwd deleted).
     for (let i = 0; i < sameDepth.length; i += parallel) {
-      const chunk = sameDepth.slice(i, i + parallel);
+      if (done >= maxDirs) break;
+      // Never overshoot the batch size, even mid-chunk.
+      const room = maxDirs - done;
+      const chunk = sameDepth.slice(i, i + Math.min(parallel, room));
       // Mark dispatched dirs as done-for-this-run BEFORE awaiting, so even
       // if their files mutate during analysis they are never re-queued.
       for (const b of chunk) analyzedThisRun.add(b.dir);
@@ -1469,7 +1492,22 @@ export async function analyzeAllParallel(root, opts = {}) {
     }
   }
 
-  return { done, skipped };
+  // Count what is still stale so a capped run can say how much is left rather
+  // than leaving the caller to guess whether it finished.
+  let remaining = 0;
+  if (capped) {
+    const state = loadState(root);
+    for (const dir of walkDirs(root)) {
+      if (effectiveScope && !effectiveScope.has(dir)) continue;
+      try {
+        if (needsAnalysis(root, dir, state)) remaining++;
+      } catch {
+        /* unreadable — not counted */
+      }
+    }
+  }
+
+  return { done, skipped, capped, remaining };
 }
 
 // ─── status reporting ─────────────────────────────────────────────────────
@@ -1596,6 +1634,7 @@ function parseArgs(argv) {
     else if (a === '--model') out.flags.model = argv[++i];
     else if (a === '--timeout-ms') out.flags.timeoutMs = Number(argv[++i]);
     else if (a === '--parallel') out.flags.parallel = Math.max(1, Number(argv[++i]) || 1);
+    else if (a === '--max-dirs') out.flags.maxDirs = Math.max(1, Number(argv[++i]) || 1);
     else if (a === '--scope') out.flags.scope = argv[++i];
     else if (a === '--changed') {
       const raw = argv[++i] ?? '';
@@ -1730,9 +1769,10 @@ async function main() {
     }
     let count = 0;
     const t0 = Date.now();
-    const { done, skipped } = await analyzeAllParallel(root, {
+    const { done, skipped, capped, remaining } = await analyzeAllParallel(root, {
       ...runOpts,
       parallel,
+      maxDirs: args.flags.maxDirs ?? Infinity,
       scope: scopeSet,
       changed: changedDirs,
       onBatchStart: ({ depth, chunkSize }) => {
@@ -1755,7 +1795,13 @@ async function main() {
     });
     const wall = ((Date.now() - t0) / 1000).toFixed(0);
     console.log(
-      `docgen: done. ${done} dirs processed${skipped ? `, ${skipped} skipped` : ''}, ${wall}s wall-clock, parallel=${parallel}.`,
+      // A capped run must never read as a finished one — say the batch size
+      // was hit and how much is left, or the caller cannot tell the
+      // difference between 'drained' and 'stopped early'.
+      capped
+        ? `docgen: CAPPED at ${done} dirs (batch size reached), ${remaining} still stale, ` +
+          `${wall}s wall-clock, parallel=${parallel}. Re-run to continue.`
+        : `docgen: done. ${done} dirs processed${skipped ? `, ${skipped} skipped` : ''}, ${wall}s wall-clock, parallel=${parallel}.`,
     );
     return;
   }
